@@ -158,6 +158,7 @@ export const listReports = asyncHandler(async (req: Request, res: Response) => {
       .limit(limit)
       .select(LIST_EXCLUDES)
       .populate("client", "companyName contactName")
+      .populate("createdBy", "fullName")
       .lean(),
     Report.countDocuments(filter),
     // Across everything this person can see, ignoring the filters — for tabs and badges.

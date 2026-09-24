@@ -1,5 +1,7 @@
 import multer from "multer";
+import type { RequestHandler } from "express";
 import { ApiError } from "../utils/ApiError";
+import { CONTENT_COMMENT_MAX_ATTACHMENTS, CONTENT_MAX_FILES, MEDIA_MAX_FILE_SIZE, MEDIA_MIME_TYPES } from "../models/content.model";
 
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const REVIEW_MIME_TYPES = [
@@ -35,3 +37,71 @@ export const reviewUpload = multer({
     cb(null, true);
   },
 });
+
+// Images, videos and documents for content (uploaded to DigitalOcean Spaces). The
+// multer size limit is only the ceiling for the largest kind of file (video); the
+// controller checks each file against the exact cap for its media and against what
+// the piece's content type accepts.
+const CONTENT_ALLOWED_MIME_TYPES = Object.values(MEDIA_MIME_TYPES).flat();
+
+const contentFileFilter: multer.Options["fileFilter"] = (req, file, cb) => {
+  if (!CONTENT_ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+    return cb(
+      new ApiError(422, `Unsupported file type (${file.originalname}) — images, MP4/MOV/WEBM video, or PDF/Word/text documents only`)
+    );
+  }
+  cb(null, true);
+};
+
+// Multer's own errors ("Too many files", "File too large"), reworded for content —
+// the shared error handler's wording is written for the 5MB image uploads above.
+const withContentErrors =
+  (handler: RequestHandler, maxFiles: number): RequestHandler =>
+  (req, res, next) =>
+    handler(req, res, (err?: unknown) => {
+      if (!(err instanceof multer.MulterError)) return next(err);
+      const messages: Partial<Record<multer.ErrorCode, string>> = {
+        LIMIT_FILE_COUNT: `Too many files — at most ${maxFiles} in one upload`,
+        LIMIT_FILE_SIZE: `A file is too large — videos up to ${MEDIA_MAX_FILE_SIZE.video / (1024 * 1024)}MB, documents ${
+          MEDIA_MAX_FILE_SIZE.doc / (1024 * 1024)
+        }MB, images ${MEDIA_MAX_FILE_SIZE.image / (1024 * 1024)}MB`,
+        LIMIT_UNEXPECTED_FILE: `Unexpected file field "${err.field}" — send files as "files"`,
+      };
+      next(new ApiError(422, messages[err.code] ?? err.message));
+    });
+
+// One piece: up to CONTENT_MAX_FILES under `files` (older callers may still send one `file`).
+export const contentUpload = withContentErrors(
+  multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MEDIA_MAX_FILE_SIZE.video, files: CONTENT_MAX_FILES },
+    fileFilter: contentFileFilter,
+  }).fields([
+    { name: "files", maxCount: CONTENT_MAX_FILES },
+    { name: "file", maxCount: 1 },
+  ]),
+  CONTENT_MAX_FILES
+);
+
+// Several pieces in one request: each piece's files arrive under `files[<piece index>]`.
+// Everything is held in memory until it goes to Spaces, so the total is capped.
+export const CONTENT_BATCH_MAX_FILES = 40;
+
+export const contentBatchUpload = withContentErrors(
+  multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MEDIA_MAX_FILE_SIZE.video, files: CONTENT_BATCH_MAX_FILES },
+    fileFilter: contentFileFilter,
+  }).any(),
+  CONTENT_BATCH_MAX_FILES
+);
+
+// Files attached to a comment, under `files`.
+export const commentUpload = withContentErrors(
+  multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MEDIA_MAX_FILE_SIZE.video, files: CONTENT_COMMENT_MAX_ATTACHMENTS },
+    fileFilter: contentFileFilter,
+  }).fields([{ name: "files", maxCount: CONTENT_COMMENT_MAX_ATTACHMENTS }]),
+  CONTENT_COMMENT_MAX_ATTACHMENTS
+);
