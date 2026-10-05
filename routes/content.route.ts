@@ -10,6 +10,7 @@ import {
   addContentComment,
   listMyContent,
   getMyContent,
+  updateMyContent,
   approveMyContent,
   addMyContentComment,
 } from "../controllers/content.controller";
@@ -25,6 +26,7 @@ import {
   commentRules,
   listContentRules,
   listMyContentRules,
+  updateMyContentRules,
 } from "../validators/content.validator";
 import { CONTENT_READ_ROLES, CONTENT_WRITE_ROLES } from "../utils/contentAccess";
 
@@ -56,6 +58,18 @@ const router = Router();
  *         client: { type: string }
  *         type: { type: string, enum: [image, carousel, story, video, blog, website, email, gmb, ad] }
  *         title: { type: string }
+ *         group: { type: string, description: Shared by pieces saved together on the Add Content page; missing on a piece saved alone }
+ *         pieces:
+ *           type: array
+ *           description: Every piece in this one's group, in the order added (this piece included). Sent with a single piece and with a grouped list.
+ *           items:
+ *             type: object
+ *             properties:
+ *               _id: { type: string }
+ *               type: { type: string }
+ *               title: { type: string }
+ *               status: { type: string }
+ *               thumbnail: { type: string, description: The piece's first image, when it has one }
  *         batchMonth: { type: string, example: September 2026 }
  *         batchType: { type: string, enum: [monthly, weekly, event, individual] }
  *         weekStart: { type: string, format: date, description: The Monday of the week (weekly) }
@@ -164,6 +178,7 @@ const router = Router();
  *       - { in: query, name: batchType, schema: { type: string, enum: [monthly, weekly, event, individual] } }
  *       - { in: query, name: individual, schema: { type: boolean } }
  *       - { in: query, name: q, schema: { type: string }, description: Search the title }
+ *       - { in: query, name: grouped, schema: { type: boolean }, description: One item per group of pieces saved together — the group's first piece, with `pieces` listing all of them. A group shows if any of its pieces matches the filters. }
  *       - { in: query, name: page, schema: { type: integer, default: 1 } }
  *       - { in: query, name: limit, schema: { type: integer, default: 20, maximum: 100 } }
  *     responses:
@@ -242,6 +257,7 @@ router.post(
  *       - { in: query, name: batchMonth, schema: { type: string } }
  *       - { in: query, name: batchType, schema: { type: string, enum: [monthly, weekly, event, individual] } }
  *       - { in: query, name: individual, schema: { type: boolean } }
+ *       - { in: query, name: grouped, schema: { type: boolean }, description: One item per group of pieces sent together (see GET /content) }
  *       - { in: query, name: page, schema: { type: integer, default: 1 } }
  *       - { in: query, name: limit, schema: { type: integer, default: 20, maximum: 100 } }
  *     responses:
@@ -269,6 +285,40 @@ router.get("/me", protect, authorize("client"), listMyContentRules, validate, li
  *         description: Not found, still a draft, or not yours
  */
 router.get("/me/:id", protect, authorize("client"), contentIdRule, validate, getMyContent);
+
+/**
+ * @swagger
+ * /content/me/{id}:
+ *   patch:
+ *     summary: Edit the caption and tags of one of the signed-in client's own content items
+ *     description: >
+ *       Only the caption and tags, and only while the item is waiting for approval or in revision.
+ *       The status doesn't change; a note is added to the item's comments so the team sees the edit.
+ *     tags: [Content]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: string } }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               caption: { type: string, maxLength: 2000 }
+ *               tags: { type: array, maxItems: 20, items: { type: string, maxLength: 50 } }
+ *     responses:
+ *       200:
+ *         description: Content updated
+ *       400:
+ *         description: Not yet sent for approval, or already approved
+ *       404:
+ *         description: Not found, or not yours
+ *       422:
+ *         description: Validation failed
+ */
+router.patch("/me/:id", protect, authorize("client"), contentIdRule, updateMyContentRules, validate, updateMyContent);
 
 /**
  * @swagger

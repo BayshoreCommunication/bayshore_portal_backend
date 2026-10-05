@@ -155,6 +155,24 @@ export const updateContentRules: ValidationChain[] = [
   body("removeFiles").optional(),
 ];
 
+// What a client may change on a piece sent to them: its caption and tags.
+export const CONTENT_MAX_TAGS = 20;
+export const CONTENT_TAG_MAX_LENGTH = 50;
+
+export const updateMyContentRules: ValidationChain[] = [
+  body("caption")
+    .optional()
+    .isString()
+    .isLength({ max: CONTENT_CAPTION_MAX_LENGTH })
+    .withMessage(`Caption cannot exceed ${CONTENT_CAPTION_MAX_LENGTH} characters`),
+  body("tags").optional().isArray({ max: CONTENT_MAX_TAGS }).withMessage(`Add at most ${CONTENT_MAX_TAGS} tags`),
+  body("tags.*")
+    .isString()
+    .trim()
+    .isLength({ min: 1, max: CONTENT_TAG_MAX_LENGTH })
+    .withMessage(`Each tag must be 1–${CONTENT_TAG_MAX_LENGTH} characters`),
+];
+
 export const changeStatusRules: ValidationChain[] = [
   body("status").isIn(CONTENT_STATUSES).withMessage(`status must be one of: ${CONTENT_STATUSES.join(", ")}`),
 ];
@@ -178,6 +196,9 @@ const paging: ValidationChain[] = [
   query("limit").optional().isInt({ min: 1, max: 100 }).toInt(),
 ];
 
+// One row per group of pieces saved together, instead of one per piece.
+const groupedQuery = query("grouped").optional().isBoolean().withMessage("grouped must be true or false");
+
 const batchTypeQuery = query("batchType")
   .optional()
   .isIn(CONTENT_BATCH_TYPES)
@@ -191,6 +212,7 @@ export const listContentRules: ValidationChain[] = [
   batchTypeQuery,
   query("individual").optional().isBoolean().withMessage("individual must be true or false"),
   query("q").optional().isString().trim().isLength({ max: 100 }),
+  groupedQuery,
   ...paging,
 ];
 
@@ -198,5 +220,6 @@ export const listMyContentRules: ValidationChain[] = [
   query("batchMonth").optional().isString().trim(),
   batchTypeQuery,
   query("individual").optional().isBoolean().withMessage("individual must be true or false"),
+  groupedQuery,
   ...paging,
 ];

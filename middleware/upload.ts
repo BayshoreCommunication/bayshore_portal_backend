@@ -2,6 +2,7 @@ import multer from "multer";
 import type { RequestHandler } from "express";
 import { ApiError } from "../utils/ApiError";
 import { CONTENT_COMMENT_MAX_ATTACHMENTS, CONTENT_MAX_FILES, MEDIA_MAX_FILE_SIZE, MEDIA_MIME_TYPES } from "../models/content.model";
+import { PROJECT_FILE_MIME_TYPES, PROJECT_MAX_FILES, PROJECT_MAX_FILE_SIZE } from "../models/project.model";
 
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const REVIEW_MIME_TYPES = [
@@ -105,3 +106,30 @@ export const commentUpload = withContentErrors(
   }).fields([{ name: "files", maxCount: CONTENT_COMMENT_MAX_ATTACHMENTS }]),
   CONTENT_COMMENT_MAX_ATTACHMENTS
 );
+
+// Files attached to a project, under `files`. Briefs, spreadsheets, artwork — see
+// PROJECT_FILE_MIME_TYPES for what's accepted and why it isn't "anything".
+const projectFiles = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: PROJECT_MAX_FILE_SIZE, files: PROJECT_MAX_FILES },
+  fileFilter: (req, file, cb) => {
+    if (!PROJECT_FILE_MIME_TYPES.includes(file.mimetype)) {
+      return cb(
+        new ApiError(422, `Unsupported file type (${file.originalname}) — images, PDF, Word, Excel, PowerPoint, text, ZIP or MP4/MOV/WEBM video only`)
+      );
+    }
+    cb(null, true);
+  },
+}).fields([{ name: "files", maxCount: PROJECT_MAX_FILES }]);
+
+// Multer's own errors, reworded for projects.
+export const projectUpload: RequestHandler = (req, res, next) =>
+  projectFiles(req, res, (err?: unknown) => {
+    if (!(err instanceof multer.MulterError)) return next(err);
+    const messages: Partial<Record<multer.ErrorCode, string>> = {
+      LIMIT_FILE_COUNT: `Too many files — a project can have at most ${PROJECT_MAX_FILES}`,
+      LIMIT_FILE_SIZE: `A file is too large — up to ${PROJECT_MAX_FILE_SIZE / (1024 * 1024)}MB each`,
+      LIMIT_UNEXPECTED_FILE: `Unexpected file field "${err.field}" — send files as "files"`,
+    };
+    next(new ApiError(422, messages[err.code] ?? err.message));
+  });

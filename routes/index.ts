@@ -4,7 +4,12 @@ import userRoutes from "./user.route";
 import clientRoutes from "./client.route";
 import reportRoutes from "./report.route";
 import contentRoutes from "./content.route";
+import leadRoutes from "./lead.route";
+import projectRoutes from "./project.route";
+import serviceRoutes from "./service.route";
+import paymentRoutes from "./payment.route";
 import auditLogRoutes from "./auditLog.route";
+import notificationRoutes from "./notification.route";
 
 const router = Router();
 
@@ -36,6 +41,11 @@ router.use("/users", userRoutes);
 router.use("/clients", clientRoutes);
 router.use("/reports", reportRoutes);
 router.use("/content", contentRoutes);
+router.use("/leads", leadRoutes);
+router.use("/projects", projectRoutes);
+router.use("/services", serviceRoutes);
+router.use("/payments", paymentRoutes);
 router.use("/audit-logs", auditLogRoutes);
+router.use("/notifications", notificationRoutes);
 
 export default router;

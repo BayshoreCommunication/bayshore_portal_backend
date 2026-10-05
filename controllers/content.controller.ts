@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import type { FilterQuery } from "mongoose";
+import mongoose, { type FilterQuery, type PopulateOptions } from "mongoose";
 import {
   Content,
   CONTENT_KIND_RULES,
@@ -20,6 +20,15 @@ import { ApiError } from "../utils/ApiError";
 import { canAccessClient, clientScopeFor, visibleClientFilter } from "../utils/clientAccess";
 import { CONTENT_REVIEW_ROLES } from "../utils/contentAccess";
 import { uploadToSpaces, deleteFromSpaces } from "../utils/uploadToSpaces";
+import {
+  forgetContentNotifications,
+  notifyClientApproved,
+  notifyClientEditedCaption,
+  notifyClientFeedback,
+  notifyContentResubmitted,
+  notifyContentSent,
+  notifyTeamReply,
+} from "../utils/notifications";
 
 const isReviewer = (user: IUser) => CONTENT_REVIEW_ROLES.includes(user.role);
 
@@ -73,6 +82,67 @@ const requireClientAccount = (user: IUser) => {
 const validationMessages = (error: unknown): string[] => {
   const errors = (error as { errors?: Record<string, { message: string }> })?.errors;
   return errors ? Object.values(errors).map((item) => item.message) : [(error as Error)?.message ?? "Invalid content"];
+};
+
+// ── Groups ───────────────────────────────────────────────────────────────────
+
+// Pieces saved together on the Add Content page share a `group` and are listed and opened
+// as one item. A piece saved on its own (and every older piece) has none: a group of one.
+
+// What a piece tells its group-mates about itself — with its first image, when it has one,
+// for a thumbnail.
+const slimPiece = ({ _id, type, title, status, files, imageUrl }: Pick<IContent, "_id" | "type" | "title" | "status" | "files" | "imageUrl">) => ({
+  _id,
+  type,
+  title,
+  status,
+  thumbnail: files?.find((file) => file.media === "image")?.url ?? imageUrl,
+});
+
+// Every piece in this one's group that the caller may see, in the order they were added.
+const piecesOf = async (content: IContent, within: FilterQuery<IContent> = {}) => {
+  if (!content.group) return [slimPiece(content)];
+  const pieces = await Content.find({ $and: [{ group: content.group, client: content.client }, within] })
+    .sort({ createdAt: 1, _id: 1 })
+    .select("type title status files imageUrl")
+    .lean();
+  return pieces.map(slimPiece);
+};
+
+// A page of groups, newest first. `filter` decides which groups show — one matching piece
+// is enough — and `within` which of a group's pieces the caller may see. Each item is the
+// group's first piece, carrying `pieces`: all of them, slimmed down.
+const listGrouped = async (
+  filter: FilterQuery<IContent>,
+  within: FilterQuery<IContent>,
+  { page, limit }: { page: number; limit: number },
+  populate: PopulateOptions[]
+) => {
+  const [found] = await Content.aggregate<{ rows: { _id: mongoose.Types.ObjectId }[]; total: { count: number }[] }>([
+    // Aggregations aren't cast to the schema the way finds are (a client id arrives as a string).
+    { $match: Content.find(filter).cast(Content) },
+    { $group: { _id: { $ifNull: ["$group", "$_id"] }, latest: { $max: "$createdAt" } } },
+    { $sort: { latest: -1, _id: -1 } },
+    { $facet: { rows: [{ $skip: (page - 1) * limit }, { $limit: limit }], total: [{ $count: "count" }] } },
+  ]);
+  const keys = found.rows.map((row) => row._id);
+
+  const pieces = await Content.find({ $and: [within, { $or: [{ group: { $in: keys } }, { _id: { $in: keys }, group: null }] }] })
+    .sort({ createdAt: 1, _id: 1 })
+    .populate(populate)
+    .lean();
+
+  const byGroup = new Map<string, typeof pieces>();
+  for (const piece of pieces) {
+    const key = String(piece.group ?? piece._id);
+    byGroup.set(key, [...(byGroup.get(key) ?? []), piece]);
+  }
+
+  const items = keys.flatMap((key) => {
+    const group = byGroup.get(String(key)) ?? [];
+    return group.length ? [{ ...group[0], pieces: group.map(slimPiece) }] : [];
+  });
+  return { items, total: found.total[0]?.count ?? 0 };
 };
 
 // ── Files ────────────────────────────────────────────────────────────────────
@@ -225,6 +295,8 @@ export const createContent = asyncHandler(async (req: Request, res: Response) =>
     throw error;
   }
 
+  if (content.status === "pending_approval") await notifyContentSent([content], requester);
+
   await content.populate("createdBy", "fullName");
   return ApiResponse(res, 201, status === "draft" ? "Content saved as a draft" : "Content sent for approval", content);
 });
@@ -239,6 +311,8 @@ export const createContentBatch = asyncHandler(async (req: Request, res: Respons
   await checkClient(requester, clientId);
 
   const pieces = req.body.pieces as Record<string, unknown>[];
+  // Everything saved in this request belongs together: one item in the lists.
+  const group = new mongoose.Types.ObjectId();
   const uploads = (req.files ?? []) as Express.Multer.File[];
   const filesOf = (index: number) => uploads.filter((file) => file.fieldname === `files[${index}]`);
 
@@ -250,7 +324,7 @@ export const createContentBatch = asyncHandler(async (req: Request, res: Respons
   const prepared = await Promise.all(
     pieces.map(async (piece, index) => {
       const type = piece.type as ContentType;
-      const content = new Content({ client: clientId, type, status, createdBy: requester._id });
+      const content = new Content({ client: clientId, type, status, group, createdBy: requester._id });
       applyBatch(content, req.body);
       applyDetails(content, piece);
 
@@ -284,6 +358,8 @@ export const createContentBatch = asyncHandler(async (req: Request, res: Respons
   }
 
   const items = prepared.map(({ content }) => content);
+  // One notification for the lot, not one per piece.
+  if (status === "pending_approval") await notifyContentSent(items, requester);
   await Content.populate(items, { path: "createdBy", select: "fullName" });
   return ApiResponse(
     res,
@@ -295,7 +371,7 @@ export const createContentBatch = asyncHandler(async (req: Request, res: Respons
 
 export const listContent = asyncHandler(async (req: Request, res: Response) => {
   const requester = req.user!;
-  const { client, type, status, batchMonth, batchType, individual, q } = req.query as Record<string, string | undefined>;
+  const { client, type, status, batchMonth, batchType, individual, q, grouped } = req.query as Record<string, string | undefined>;
   const { page, limit } = pagingOf(req);
 
   const scope = await visibleClientFilter(requester);
@@ -310,15 +386,22 @@ export const listContent = asyncHandler(async (req: Request, res: Response) => {
   if (q) conditions.push(titleMatch(q));
   const filter: FilterQuery<IContent> = { $and: conditions };
 
-  const [items, total, statusCounts] = await Promise.all([
-    Content.find(filter)
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .populate("client", "companyName contactName")
-      .populate("createdBy approvedBy comments.user", "fullName")
-      .lean(),
-    Content.countDocuments(filter),
+  const [{ items, total }, statusCounts] = await Promise.all([
+    toBool(grouped)
+      ? listGrouped(filter, scope, { page, limit }, [
+          { path: "client", select: "companyName contactName" },
+          { path: "createdBy approvedBy comments.user", select: "fullName" },
+        ])
+      : Promise.all([
+          Content.find(filter)
+            .sort({ createdAt: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit)
+            .populate("client", "companyName contactName")
+            .populate("createdBy approvedBy comments.user", "fullName")
+            .lean(),
+          Content.countDocuments(filter),
+        ]).then(([found, count]) => ({ items: found, total: count })),
     // Across everything this person can see, ignoring the filters — for tabs and badges.
     Content.aggregate<{ _id: ContentStatus; count: number }>([
       { $match: scope },
@@ -338,12 +421,13 @@ export const listContent = asyncHandler(async (req: Request, res: Response) => {
 
 export const getContent = asyncHandler(async (req: Request, res: Response) => {
   const content = await findVisibleContent(req.user!, req.params.id);
+  const pieces = await piecesOf(content);
   await content.populate([
     { path: "client", select: "companyName contactName" },
     { path: "createdBy approvedBy comments.user", select: "fullName" },
   ]);
 
-  return ApiResponse(res, 200, "Content fetched successfully", content);
+  return ApiResponse(res, 200, "Content fetched successfully", { ...content.toJSON(), pieces });
 });
 
 // Change a piece's details, add files (`files`), and drop files by URL (`removeFiles`).
@@ -407,6 +491,12 @@ export const changeContentStatus = asyncHandler(async (req: Request, res: Respon
   content.status = target;
   await content.save();
 
+  // The client hears when something comes (back) to them — not about the other moves.
+  if (target === "pending_approval") {
+    if (current === "revision_requested") await notifyContentResubmitted(content, requester);
+    else await notifyContentSent([content], requester);
+  }
+
   return ApiResponse(res, 200, `Content is now ${target}`, content);
 });
 
@@ -415,6 +505,7 @@ export const deleteContent = asyncHandler(async (req: Request, res: Response) =>
   const content = await findVisibleContent(req.user!, req.params.id);
 
   await content.deleteOne();
+  await forgetContentNotifications(content._id);
   // deleteFromSpaces ignores anything that isn't a Spaces URL (e.g. a pasted link).
   await removeFiles([
     ...content.files.map((file) => file.url),
@@ -443,6 +534,7 @@ export const addContentComment = asyncHandler(async (req: Request, res: Response
     createdAt: new Date(),
   });
   await saveWithAttachments(content, attachments);
+  await notifyTeamReply(content, requester, req.body.text, attachments.length);
 
   return ApiResponse(res, 200, "Comment added", content);
 });
@@ -451,23 +543,29 @@ export const addContentComment = asyncHandler(async (req: Request, res: Response
 
 export const listMyContent = asyncHandler(async (req: Request, res: Response) => {
   const clientId = requireClientAccount(req.user!);
-  const { batchMonth, batchType, individual } = req.query as Record<string, string | undefined>;
+  const { batchMonth, batchType, individual, grouped } = req.query as Record<string, string | undefined>;
   const { page, limit } = pagingOf(req);
 
-  const conditions: FilterQuery<IContent>[] = [{ client: clientId, status: { $ne: "draft" } }];
+  // A client never sees a draft — not in the list, and not among a group's pieces.
+  const sent: FilterQuery<IContent> = { client: clientId, status: { $ne: "draft" } };
+  const conditions: FilterQuery<IContent>[] = [sent];
   if (batchMonth) conditions.push({ batchMonth });
   if (batchType) conditions.push(batchTypeFilter(batchType));
   if (individual !== undefined) conditions.push({ isIndividual: individual === "true" });
   const filter: FilterQuery<IContent> = { $and: conditions };
 
-  const [items, total, months] = await Promise.all([
-    Content.find(filter)
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .populate("createdBy approvedBy comments.user", "fullName")
-      .lean(),
-    Content.countDocuments(filter),
+  const [{ items, total }, months] = await Promise.all([
+    toBool(grouped)
+      ? listGrouped(filter, sent, { page, limit }, [{ path: "createdBy approvedBy comments.user", select: "fullName" }])
+      : Promise.all([
+          Content.find(filter)
+            .sort({ createdAt: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit)
+            .populate("createdBy approvedBy comments.user", "fullName")
+            .lean(),
+          Content.countDocuments(filter),
+        ]).then(([found, count]) => ({ items: found, total: count })),
     // For the month dropdown — the regular monthly batches only, not one-off sends.
     Content.find({ client: clientId, status: { $ne: "draft" }, isIndividual: false }).distinct("batchMonth"),
   ]);
@@ -488,7 +586,51 @@ export const getMyContent = asyncHandler(async (req: Request, res: Response) => 
   );
   if (!content) throw new ApiError(404, "Content not found");
 
-  return ApiResponse(res, 200, "Content fetched successfully", content);
+  // The other pieces sent with it — never one that is still a draft.
+  const pieces = await piecesOf(content, { status: { $ne: "draft" } });
+
+  return ApiResponse(res, 200, "Content fetched successfully", { ...content.toJSON(), pieces });
+});
+
+// The client's own edit — the caption and tags only: the words that go out under their name.
+// The status stays where it is, and a note on the thread tells the team the text changed.
+export const updateMyContent = asyncHandler(async (req: Request, res: Response) => {
+  const clientId = requireClientAccount(req.user!);
+  const requester = req.user!;
+
+  const content = await Content.findOne({ _id: req.params.id, client: clientId });
+  if (!content) throw new ApiError(404, "Content not found");
+  if (content.status === "draft") throw new ApiError(400, "This item hasn't been sent for approval yet");
+  if (content.status === "approved") throw new ApiError(400, "This item is already approved");
+
+  const changed: string[] = [];
+  if (req.body.caption !== undefined && String(req.body.caption).trim() !== (content.caption ?? "")) {
+    content.caption = req.body.caption;
+    changed.push("caption");
+  }
+  if (req.body.tags !== undefined) {
+    const tags = parseList(req.body.tags);
+    if (tags.join("\n") !== content.tags.join("\n")) {
+      content.tags = tags;
+      changed.push("tags");
+    }
+  }
+
+  if (changed.length) {
+    content.comments.push({
+      author: "client",
+      user: requester._id,
+      name: requester.fullName,
+      text: `Edited the ${changed.join(" and ")}.`,
+      attachments: [],
+      createdAt: new Date(),
+    });
+    await content.save();
+    await notifyClientEditedCaption(content, requester, changed);
+  }
+  await content.populate("createdBy approvedBy comments.user", "fullName");
+
+  return ApiResponse(res, 200, changed.length ? "Content updated" : "Nothing to change", content);
 });
 
 export const approveMyContent = asyncHandler(async (req: Request, res: Response) => {
@@ -504,6 +646,7 @@ export const approveMyContent = asyncHandler(async (req: Request, res: Response)
   content.approvedAt = new Date();
   content.approvedBy = req.user!._id;
   await content.save();
+  await notifyClientApproved(content, req.user!);
   await content.populate("createdBy approvedBy comments.user", "fullName");
 
   return ApiResponse(res, 200, "Content approved", content);
@@ -531,6 +674,7 @@ export const addMyContentComment = asyncHandler(async (req: Request, res: Respon
   });
   content.status = "revision_requested";
   await saveWithAttachments(content, attachments);
+  await notifyClientFeedback(content, requester, req.body.text, attachments.length);
   await content.populate("createdBy approvedBy comments.user", "fullName");
 
   return ApiResponse(res, 200, "Comment added", content);

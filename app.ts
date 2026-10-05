@@ -9,6 +9,7 @@ import routes from "./routes/index";
 import { notFound } from "./middleware/notFound";
 import { errorHandler } from "./middleware/errorHandler";
 import { requestContext } from "./middleware/requestContext";
+import { stripeWebhook } from "./controllers/payment.controller";
 
 const app = express();
 const swaggerUiVersion = "5.32.13";
@@ -70,6 +71,10 @@ app.use(
     credentials: true,
   })
 );
+// Stripe signs the exact bytes it sends, so its webhook takes the body raw —
+// this has to sit ahead of express.json(), which would parse (and so change) it.
+app.post("/api/v1/payments/stripe/webhook", express.raw({ type: "application/json" }), stripeWebhook);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

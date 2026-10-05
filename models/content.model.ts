@@ -129,6 +129,10 @@ export interface IContent extends Document {
   type: ContentType;
   title: string;
 
+  // Pieces saved together on the Add Content page share one group, and are listed and
+  // opened as a single item. A piece saved on its own — and every older piece — has none.
+  group?: mongoose.Types.ObjectId;
+
   // e.g. "September 2026" — set for every batch type.
   batchMonth: string;
   batchType: ContentBatchType;
@@ -240,6 +244,8 @@ const contentSchema = new Schema<IContent>(
       trim: true,
       maxlength: [CONTENT_TITLE_MAX_LENGTH, `Title cannot exceed ${CONTENT_TITLE_MAX_LENGTH} characters`],
     },
+
+    group: { type: Schema.Types.ObjectId, index: true },
 
     batchMonth: { type: String, required: [true, "Batch month is required"], trim: true },
     // No default on purpose: a record saved before batchType existed is read from its

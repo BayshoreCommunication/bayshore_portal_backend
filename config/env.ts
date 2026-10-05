@@ -45,6 +45,13 @@ export const env = {
   jwtSecret: process.env.JWT_SECRET as string,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "15m",
   refreshTokenExpiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || "30d",
+  // Where the client portal lives — Stripe sends a client back here after paying.
+  clientPortalUrl: (process.env.CLIENT_PORTAL_URL || "http://localhost:3001").replace(/\/+$/, ""),
+  // Optional at boot: without them the API runs, and checkout answers 503.
+  stripe: {
+    secretKey: process.env.STRIPE_SECRET_KEY || "",
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || "",
+  },
   doSpaces: {
     key: process.env.DO_SPACES_KEY as string,
     secret: process.env.DO_SPACES_SECRET as string,
