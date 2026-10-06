@@ -68,7 +68,11 @@ main() {
 
   if [ -n "$previous" ] && [ -d "$previous" ]; then
     activate "$previous"
-    echo "Rolled back to $previous" >&2
+    if healthy; then
+      echo "Rolled back to $previous" >&2
+    else
+      echo "Rolled back to $previous, but it is not answering the health check either" >&2
+    fi
   fi
   rm -rf "$release"
   exit 1
