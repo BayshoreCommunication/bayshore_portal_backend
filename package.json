@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Express API server for Bayshore Client Portal",
   "main": "dist/server.js",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "nodemon",
     "build": "tsc",

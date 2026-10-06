@@ -29,6 +29,16 @@ const start = async () => {
       console.error("Unhandled Rejection:", err);
       server.close(() => process.exit(1));
     });
+
+    // PM2 sends SIGINT on a reload (systemd and Docker send SIGTERM). Stop taking
+    // requests and let the ones in flight finish; open Socket.io connections never
+    // end on their own, so the wait is capped.
+    const shutdown = () => {
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 5000).unref();
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
   } catch (err) {
     console.error(`Failed to start server: ${(err as Error).message}`);
     process.exit(1);
