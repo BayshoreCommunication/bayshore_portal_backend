@@ -30,7 +30,7 @@ type Plain = Record<string, unknown>;
 const isPlainObject = (value: unknown): value is Plain =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-// [["social.reel.views", 100], ...] — objects are walked, arrays and values are leaves.
+// [["social.facebookReach", 100], ["social.videos", [...]], ...] — objects are walked, arrays and values are leaves.
 const leaves = (value: unknown, prefix = ""): [string, unknown][] =>
   isPlainObject(value)
     ? Object.entries(value).flatMap(([key, inner]) => leaves(inner, prefix ? `${prefix}.${key}` : key))
@@ -49,8 +49,8 @@ const hasContent = (report: IReport) => {
 };
 
 // PATCH means "change what I sent". Sections are merged figure by figure, so sending
-// only social.facebookReach leaves the other figures alone; lists are replaced whole;
-// null clears a figure.
+// only social.facebookReach leaves the other figures alone; lists (blogs, social.videos,
+// gmb.locations) are replaced whole; null clears a figure.
 const applyContent = (report: IReport, body: Plain) => {
   if (body.title !== undefined) report.title = (body.title as string) || (undefined as unknown as string);
   if (body.summary !== undefined) report.summary = body.summary as string;

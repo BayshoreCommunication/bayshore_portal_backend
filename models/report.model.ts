@@ -25,6 +25,9 @@ export interface IReport extends Document {
     instagramReach?: number;
     twitterReach?: number;
     linkedinReach?: number;
+    // The period's videos, each with its own figures.
+    videos: { title: string; views?: number; impressions?: number }[];
+    // An older report's single best-performing video — `videos` took its place.
     reel?: { title?: string; views?: number };
   };
   blogs: { title: string; publishedAt?: Date; graphicsCount?: number; url?: string }[];
@@ -100,9 +103,21 @@ export interface IReport extends Document {
  *               type: integer
  *             linkedinReach:
  *               type: integer
+ *             videos:
+ *               type: array
+ *               description: The period's videos, each with its own figures
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   title:
+ *                     type: string
+ *                   views:
+ *                     type: integer
+ *                   impressions:
+ *                     type: integer
  *             reel:
  *               type: object
- *               description: Best-performing short video of the period
+ *               description: An older report's single best-performing video — `videos` took its place
  *               properties:
  *                 title:
  *                   type: string
@@ -206,6 +221,19 @@ const reportSchema = new Schema<IReport>(
       instagramReach: count,
       twitterReach: count,
       linkedinReach: count,
+      videos: {
+        type: [
+          new Schema(
+            {
+              title: { type: String, required: [true, "Video title is required"], trim: true },
+              views: count,
+              impressions: count,
+            },
+            { _id: false }
+          ),
+        ],
+        default: [],
+      },
       reel: {
         title: { type: String, trim: true },
         views: count,

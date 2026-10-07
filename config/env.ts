@@ -52,6 +52,14 @@ export const env = {
     secretKey: process.env.STRIPE_SECRET_KEY || "",
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || "",
   },
+  // Optional at boot: without the key and a sender the API runs, and no email goes out.
+  email: {
+    resendApiKey: process.env.RESEND_API_KEY || "",
+    // A sender on a domain verified in Resend: "BayShore Communication <notifications@example.com>".
+    from: process.env.EMAIL_FROM || "",
+    // Where a client's reply to an email goes, if not to the sender.
+    replyTo: process.env.EMAIL_REPLY_TO || "",
+  },
   doSpaces: {
     key: process.env.DO_SPACES_KEY as string,
     secret: process.env.DO_SPACES_SECRET as string,

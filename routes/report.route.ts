@@ -58,8 +58,19 @@ const router = Router();
  *             instagramReach: { type: integer, minimum: 0, nullable: true }
  *             twitterReach: { type: integer, minimum: 0, nullable: true }
  *             linkedinReach: { type: integer, minimum: 0, nullable: true }
+ *             videos:
+ *               type: array
+ *               description: Replaces the whole list when sent
+ *               items:
+ *                 type: object
+ *                 required: [title]
+ *                 properties:
+ *                   title: { type: string }
+ *                   views: { type: integer, minimum: 0, nullable: true }
+ *                   impressions: { type: integer, minimum: 0, nullable: true }
  *             reel:
  *               type: object
+ *               description: Older reports only — use `videos`
  *               properties:
  *                 title: { type: string }
  *                 views: { type: integer, minimum: 0, nullable: true }

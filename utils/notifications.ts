@@ -8,6 +8,8 @@ import {
 import { Client } from "../models/client.model";
 import { User, type IUser } from "../models/user.model";
 import type { IContent } from "../models/content.model";
+import { env } from "../config/env";
+import { emailReady, notificationEmail, sendEmail } from "./email";
 
 // Telling the other side that something happened on a piece of content. Called by the
 // content controller after the change itself is saved.
@@ -15,6 +17,9 @@ import type { IContent } from "../models/content.model";
 // The client's logins hear about what the team does; the staff on that client — its account
 // manager, its team, whoever added the client and whoever made the piece — hear about what
 // the client does. Nobody is told about their own action.
+//
+// What the client is told in the portal they are also told by email (`email` below), at the
+// address of each of their logins — when email is set up (see utils/email.ts).
 //
 // A notification is a courtesy: none of these ever throws, so a failure here can't undo or
 // fail the action it reports. It is logged instead.
@@ -45,26 +50,47 @@ const staffOn = async (content: IContent, except?: Id) => {
   return { recipients, company: client?.companyName ?? "A client" };
 };
 
-const deliver = (
+// The same notification by email, to those of the recipients who have an address. The button
+// in it opens the piece in the client portal.
+const emailTo = async (recipients: Id[], { title, body, content }: { title: string; body?: string; content: IContent }) => {
+  if (!emailReady) return;
+  const people = await User.find({ _id: { $in: recipients }, email: { $nin: [null, ""] } }).select("fullName email").lean();
+  const url = `${env.clientPortalUrl}${linkTo(content)}`;
+  await Promise.all(people.map((person) => sendEmail({ to: person.email as string, ...notificationEmail({ name: person.fullName, title, body, url }) })));
+};
+
+const deliver = async (
   recipients: Id[],
-  notification: { type: NotificationType; title: string; body?: string; content: IContent; actor: IUser; pieces?: number }
-) =>
-  recipients.length
-    ? Notification.insertMany(
-        recipients.map((recipient) => ({
-          recipient,
-          type: notification.type,
-          title: clip(notification.title, NOTIFICATION_TITLE_MAX_LENGTH),
-          body: notification.body ? clip(notification.body, NOTIFICATION_BODY_MAX_LENGTH) : undefined,
-          link: linkTo(notification.content),
-          actor: notification.actor._id,
-          actorName: notification.actor.fullName,
-          client: notification.content.client,
-          content: notification.content._id,
-          pieces: notification.pieces ?? 1,
-        }))
-      )
-    : [];
+  notification: {
+    type: NotificationType;
+    title: string;
+    body?: string;
+    content: IContent;
+    actor: IUser;
+    pieces?: number;
+    // Also send it by email — for what the client is told.
+    email?: boolean;
+  }
+) => {
+  if (!recipients.length) return;
+  const title = clip(notification.title, NOTIFICATION_TITLE_MAX_LENGTH);
+  const body = notification.body ? clip(notification.body, NOTIFICATION_BODY_MAX_LENGTH) : undefined;
+  await Notification.insertMany(
+    recipients.map((recipient) => ({
+      recipient,
+      type: notification.type,
+      title,
+      body,
+      link: linkTo(notification.content),
+      actor: notification.actor._id,
+      actorName: notification.actor.fullName,
+      client: notification.content.client,
+      content: notification.content._id,
+      pieces: notification.pieces ?? 1,
+    }))
+  );
+  if (notification.email) await emailTo(recipients, { title, body, content: notification.content });
+};
 
 // Runs the work and swallows (logs) whatever goes wrong.
 const quietly =
@@ -102,6 +128,7 @@ export const notifyContentSent = quietly(async (pieces: IContent[], actor: IUser
       createdAt: { $gte: new Date(Date.now() - SENT_TOGETHER_MS) },
     }).sort({ createdAt: -1 });
 
+    // (No second email either: the first one already says content is waiting.)
     if (recent) {
       recent.pieces += pieces.length;
       recent.title = sentTitle(recent.pieces);
@@ -119,6 +146,7 @@ export const notifyContentSent = quietly(async (pieces: IContent[], actor: IUser
       content: first,
       actor,
       pieces: pieces.length,
+      email: true,
     });
   }
 });
@@ -131,6 +159,7 @@ export const notifyContentResubmitted = quietly(async (content: IContent, actor:
     body: content.title,
     content,
     actor,
+    email: true,
   });
 });
 
@@ -143,6 +172,7 @@ export const notifyTeamReply = quietly(async (content: IContent, actor: IUser, t
     body: `${actor.fullName}: ${excerptOf(text, attachments)}`,
     content,
     actor,
+    email: true,
   });
 });
 

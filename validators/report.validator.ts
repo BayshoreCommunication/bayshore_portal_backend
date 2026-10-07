@@ -29,6 +29,17 @@ const contentRules: ValidationChain[] = [
   metric("social.instagramReach"),
   metric("social.twitterReach"),
   metric("social.linkedinReach"),
+  body("social.videos").optional().isArray({ max: 100 }).withMessage("social.videos must be a list of at most 100 items"),
+  body("social.videos.*.title")
+    .isString()
+    .withMessage("Each video needs a title")
+    .trim()
+    .notEmpty()
+    .withMessage("Each video needs a title")
+    .isLength({ max: 300 }),
+  metric("social.videos.*.views"),
+  metric("social.videos.*.impressions"),
+  // An older report's single best-performing video; `social.videos` took its place.
   body("social.reel").optional().isObject().withMessage("social.reel must be an object"),
   body("social.reel.title").optional().isString().trim().isLength({ max: 300 }),
   metric("social.reel.views"),
