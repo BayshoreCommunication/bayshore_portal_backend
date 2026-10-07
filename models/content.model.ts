@@ -36,7 +36,9 @@ export const MEDIA_MAX_FILE_SIZE: Record<ContentMedia, number> = {
 export const mediaOfMimeType = (mimeType: string): ContentMedia | undefined =>
   CONTENT_MEDIA.find((media) => MEDIA_MIME_TYPES[media].includes(mimeType));
 
-export const CONTENT_MAX_FILES = 10;
+// The most files one request can carry — they are held in memory until they go to Spaces. A
+// piece itself can have any number: a longer list simply comes over several requests.
+export const CONTENT_REQUEST_MAX_FILES = 40;
 
 export const CONTENT_CTAS = ["Learn more", "Call now", "Book", "Get offer", "Sign up", "Contact us"] as const;
 
@@ -200,10 +202,12 @@ export interface IContent extends Document {
   // Every revision this piece has been through, oldest first.
   revisions: IContentRevision[];
 
-  // Up to CONTENT_MAX_FILES uploads (DigitalOcean Spaces), and/or a pasted link
+  // Any number of uploads (DigitalOcean Spaces), and/or a pasted link
   // for the kinds that allow one (video, blog, website, email).
   files: IContentFile[];
   link?: string;
+  // A cover image for the piece's video — one per piece, for the kinds that take video.
+  videoThumbnail?: IContentFile;
   // Files replaced during a revision, newest first. `files` is always the piece as it stands.
   previousFiles: IContentPreviousFile[];
 
@@ -373,15 +377,9 @@ const contentSchema = new Schema<IContent>(
     revisionCount: { type: Number, default: 0 },
     revisions: { type: [contentRevisionSchema], default: [] },
 
-    files: {
-      type: [contentFileSchema],
-      default: [],
-      validate: {
-        validator: (files: IContentFile[]) => files.length <= CONTENT_MAX_FILES,
-        message: `A piece can have at most ${CONTENT_MAX_FILES} files`,
-      },
-    },
+    files: { type: [contentFileSchema], default: [] },
     link: { type: String, trim: true, maxlength: [CONTENT_URL_MAX_LENGTH, "Link is too long"] },
+    videoThumbnail: { type: contentFileSchema },
     previousFiles: { type: [contentPreviousFileSchema], default: [] },
 
     pageName: { type: String, trim: true, maxlength: [120, "Page name cannot exceed 120 characters"] },
@@ -470,6 +468,9 @@ contentSchema.pre("validate", function () {
     }
     const wrong = this.files.find((file) => !rules.media.includes(file.media));
     if (wrong) this.invalidate("files", `${withArticle(label)} can't include ${wrong.media} files (${wrong.name || "file"})`);
+    if (this.videoThumbnail && !rules.media.includes("video")) {
+      this.invalidate("videoThumbnail", `${withArticle(label)} doesn't take a video thumbnail`);
+    }
     for (const field of rules.required) {
       if (!this[field]?.trim()) this.invalidate(field, `${FIELD_LABELS[field]} is required for ${withArticle(label).toLowerCase()}`);
     }

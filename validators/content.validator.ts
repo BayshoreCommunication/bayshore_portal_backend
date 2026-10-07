@@ -118,13 +118,17 @@ export const createContentRules: ValidationChain[] = [
 ];
 
 // Several pieces at once: shared batch fields in the body, each piece's own fields
-// in `pieces` (a JSON array — a string when sent as multipart).
+// in `pieces` (a JSON array — a string when sent as multipart). One request carries up to
+// CONTENT_BATCH_MAX_PIECES; a longer list comes over several, the later ones naming the
+// `group` the first one made (and `more` on all but the last, to hold the notification).
 export const CONTENT_BATCH_MAX_PIECES = 10;
 
 export const createContentBatchRules: ValidationChain[] = [
   body("client").isMongoId().withMessage("A valid client is required"),
   createStatusRule,
   ...batchRules(true),
+  body("group").optional({ checkFalsy: true }).isMongoId().withMessage("group must be a valid id"),
+  body("more").optional(),
   body("pieces")
     .customSanitizer((value) => {
       if (typeof value !== "string") return value;
@@ -134,8 +138,9 @@ export const createContentBatchRules: ValidationChain[] = [
         return value;
       }
     })
-    .isArray({ min: 1, max: CONTENT_BATCH_MAX_PIECES })
-    .withMessage(`pieces must be a list of 1–${CONTENT_BATCH_MAX_PIECES} pieces`),
+    // None at all only closes a longer list: see createContentBatch.
+    .isArray({ min: 0, max: CONTENT_BATCH_MAX_PIECES })
+    .withMessage(`pieces must be a list of up to ${CONTENT_BATCH_MAX_PIECES} pieces`),
   body("pieces.*").isObject().withMessage("Each piece must be an object"),
   body("pieces.*.type").isIn(CONTENT_TYPES).withMessage(`Each piece's type must be one of: ${CONTENT_TYPES.join(", ")}`),
   titleRule("pieces.*.title"),
@@ -156,6 +161,10 @@ export const updateContentRules: ValidationChain[] = [
   body("removeFiles").optional(),
   // URLs of existing files to leave in the piece when new files replace the rest (after a revision).
   body("keepFiles").optional(),
+  // "true" takes the video's thumbnail off (a new `thumbnail` file replaces it instead).
+  body("removeThumbnail").optional(),
+  // "true" when the files are more of the upload just made, sent in a further request.
+  body("extend").optional(),
 ];
 
 // What a client may change on a piece sent to them: its caption and tags.

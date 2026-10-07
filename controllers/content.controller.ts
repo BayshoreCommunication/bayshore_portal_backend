@@ -3,7 +3,6 @@ import mongoose, { type FilterQuery, type PopulateOptions } from "mongoose";
 import {
   Content,
   CONTENT_KIND_RULES,
-  CONTENT_MAX_FILES,
   CONTENT_STATUSES,
   MEDIA_MAX_FILE_SIZE,
   mediaOfMimeType,
@@ -102,8 +101,8 @@ const awaitingTeamOf = ({ status, comments }: Pick<IContent, "status" | "comment
   return !thread.slice(asked + 1).some((entry) => entry.author === "team");
 };
 
-// What a piece tells its group-mates about itself — with its first image, when it has one,
-// for a thumbnail.
+// What a piece tells its group-mates about itself — with its video's cover or its first
+// image, when it has one, for a thumbnail.
 const slimPiece = ({
   _id,
   type,
@@ -113,14 +112,15 @@ const slimPiece = ({
   comments,
   files,
   imageUrl,
-}: Pick<IContent, "_id" | "type" | "title" | "status" | "revisionCount" | "comments" | "files" | "imageUrl">) => ({
+  videoThumbnail,
+}: Pick<IContent, "_id" | "type" | "title" | "status" | "revisionCount" | "comments" | "files" | "imageUrl" | "videoThumbnail">) => ({
   _id,
   type,
   title,
   status,
   revisionCount: revisionCount ?? 0,
   awaitingTeam: awaitingTeamOf({ status, comments }),
-  thumbnail: files?.find((file) => file.media === "image")?.url ?? imageUrl,
+  thumbnail: videoThumbnail?.url ?? files?.find((file) => file.media === "image")?.url ?? imageUrl,
 });
 
 // Every piece in this one's group that the caller may see, in the order they were added.
@@ -133,7 +133,7 @@ const piecesOf = async (content: IContent, within: FilterQuery<IContent> = {}, f
   if (!content.group) return [tell(content)];
   const pieces = await Content.find({ $and: [{ group: content.group, client: content.client }, within] })
     .sort({ createdAt: 1, _id: 1 })
-    .select(`type title status revisionCount files imageUrl ${forPage ? "comments revisions" : "comments.author comments.revision"}`)
+    .select(`type title status revisionCount files imageUrl videoThumbnail ${forPage ? "comments revisions" : "comments.author comments.revision"}`)
     .lean();
   return pieces.map(tell);
 };
@@ -176,7 +176,7 @@ const listGrouped = async (
 
 // ── Files ────────────────────────────────────────────────────────────────────
 
-// Files from a single-piece request: `files` (up to CONTENT_MAX_FILES), or the older single `file`.
+// Files from a single-piece request: `files`, or the older single `file`.
 const uploadedFilesOf = (req: Request): Express.Multer.File[] => {
   const fields = (req.files ?? {}) as Record<string, Express.Multer.File[]>;
   return [...(fields.files ?? []), ...(fields.file ?? [])];
@@ -214,6 +214,30 @@ const uploadFiles = async (type: ContentType, checked: ReturnType<typeof checkFi
     throw error;
   }
 };
+
+// A video's cover image: one per piece, under `thumbnail` — for the kinds that take video,
+// an image within the image size cap.
+const thumbnailOf = (req: Request): Express.Multer.File | undefined =>
+  ((req.files ?? {}) as Record<string, Express.Multer.File[]>).thumbnail?.[0];
+
+const checkThumbnail = (type: ContentType, file?: Express.Multer.File) => {
+  if (!file) return undefined;
+  if (!CONTENT_KIND_RULES[type]?.media.includes("video")) throw new ApiError(422, `A thumbnail is for video content — ${type} content doesn't take one`);
+  if (mediaOfMimeType(file.mimetype) !== "image") throw new ApiError(422, `"${file.originalname}" can't be a thumbnail (images only)`);
+  if (file.size > MEDIA_MAX_FILE_SIZE.image) {
+    throw new ApiError(422, `"${file.originalname}" is too large for a thumbnail (max ${MEDIA_MAX_FILE_SIZE.image / (1024 * 1024)}MB)`);
+  }
+  return file;
+};
+
+const uploadThumbnail = async (type: ContentType, file: Express.Multer.File): Promise<IContentFile> => ({
+  url: await uploadToSpaces(file, `content/${type}/thumbnails`),
+  name: file.originalname,
+  size: file.size,
+  mimeType: file.mimetype,
+  media: "image",
+  uploadedAt: new Date(),
+});
 
 // Files attached to a comment: any media, each within its size cap, sent to Spaces.
 const uploadCommentFiles = (req: Request): Promise<IContentFile[]> =>
@@ -279,7 +303,7 @@ const checkClient = async (requester: IUser, clientId: unknown) => {
   if (!client) throw new ApiError(404, "Client not found");
 };
 
-// One piece, with up to CONTENT_MAX_FILES files. Saved as a draft, or sent to the
+// One piece, with its files. Saved as a draft, or sent to the
 // client straight away with status "pending_approval".
 export const createContent = asyncHandler(async (req: Request, res: Response) => {
   const requester = req.user!;
@@ -292,6 +316,7 @@ export const createContent = asyncHandler(async (req: Request, res: Response) =>
   applyDetails(content, req.body);
 
   const checked = checkFiles(type, uploadedFilesOf(req));
+  const thumbnail = checkThumbnail(type, thumbnailOf(req));
   // Check everything else before sending files anywhere: validate against placeholders.
   content.files = checked.map(({ file, media }) => ({ url: "pending", name: file.originalname, size: file.size, mimeType: file.mimetype, media }));
   await content.validate().catch((error) => {
@@ -300,9 +325,10 @@ export const createContent = asyncHandler(async (req: Request, res: Response) =>
 
   content.files = await uploadFiles(type, checked);
   try {
+    if (thumbnail) content.videoThumbnail = await uploadThumbnail(type, thumbnail);
     await content.save();
   } catch (error) {
-    await removeFiles(content.files.map((file) => file.url));
+    await removeFiles([...content.files.map((file) => file.url), content.videoThumbnail?.url]);
     throw error;
   }
 
@@ -314,20 +340,34 @@ export const createContent = asyncHandler(async (req: Request, res: Response) =>
 
 // Several pieces for one client and batch, in one request — what the Add Content
 // page sends. Shared batch fields sit in the body; `pieces` is a JSON array of each
-// piece's own fields; each piece's files arrive under `files[<index>]`. Nothing is
-// saved unless every piece is complete.
+// piece's own fields; each piece's files arrive under `files[<index>]`, and its video's
+// cover under `thumbnails[<index>]`. Nothing is saved unless every piece is complete.
+//
+// A request carries a limited number of pieces and files, so a longer list comes over
+// several: the later ones name the `group` the first one made, and all but the last say
+// `more` is on its way, which holds the client's notification until the lot is in. The last
+// may carry no pieces at all: it only says the group is complete.
 export const createContentBatch = asyncHandler(async (req: Request, res: Response) => {
   const requester = req.user!;
   const { client: clientId, status = "draft" } = req.body;
   await checkClient(requester, clientId);
 
   const pieces = req.body.pieces as Record<string, unknown>[];
-  // Everything saved in this request belongs together: one item in the lists.
-  const group = new mongoose.Types.ObjectId();
+  // Everything saved together belongs together: one item in the lists.
+  const continued: string | undefined = req.body.group || undefined;
+  if (!pieces.length && !continued) throw new ApiError(422, "pieces must list at least one piece");
+  if (continued && !(await Content.exists({ group: continued, client: clientId }))) {
+    throw new ApiError(422, "These pieces can't be added to that group — it isn't this client's");
+  }
+  const group = new mongoose.Types.ObjectId(continued);
   const uploads = (req.files ?? []) as Express.Multer.File[];
   const filesOf = (index: number) => uploads.filter((file) => file.fieldname === `files[${index}]`);
+  const thumbnailFor = (index: number) => uploads.find((file) => file.fieldname === `thumbnails[${index}]`);
 
-  const stray = uploads.find((file) => !/^files\[\d+\]$/.test(file.fieldname) || Number(file.fieldname.slice(6, -1)) >= pieces.length);
+  const stray = uploads.find((file) => {
+    const field = /^(?:files|thumbnails)\[(\d+)\]$/.exec(file.fieldname);
+    return !field || Number(field[1]) >= pieces.length;
+  });
   if (stray) throw new ApiError(422, `File "${stray.originalname}" isn't attached to a piece (field "${stray.fieldname}")`);
 
   // Build and check every piece before uploading anything.
@@ -340,8 +380,10 @@ export const createContentBatch = asyncHandler(async (req: Request, res: Respons
       applyDetails(content, piece);
 
       let checked: ReturnType<typeof checkFiles> = [];
+      let thumbnail: Express.Multer.File | undefined;
       try {
         checked = checkFiles(type, filesOf(index));
+        thumbnail = checkThumbnail(type, thumbnailFor(index));
       } catch (error) {
         problems.push(`Piece ${index + 1}: ${(error as Error).message}`);
       }
@@ -349,16 +391,20 @@ export const createContentBatch = asyncHandler(async (req: Request, res: Respons
       await content.validate().catch((error) => {
         for (const message of validationMessages(error)) problems.push(`Piece ${index + 1}: ${message}`);
       });
-      return { content, checked };
+      return { content, checked, thumbnail };
     })
   );
   if (problems.length) throw new ApiError(422, `${pieces.length === 1 ? "The piece is" : "Some pieces are"} incomplete`, problems);
 
   const sent: string[] = [];
   try {
-    for (const { content, checked } of prepared) {
+    for (const { content, checked, thumbnail } of prepared) {
       content.files = await uploadFiles(content.type, checked);
       sent.push(...content.files.map((file) => file.url));
+      if (thumbnail) {
+        content.videoThumbnail = await uploadThumbnail(content.type, thumbnail);
+        sent.push(content.videoThumbnail.url);
+      }
     }
     // One at a time, so the audit log and the save hooks run for each piece.
     for (const { content } of prepared) await content.save();
@@ -369,13 +415,17 @@ export const createContentBatch = asyncHandler(async (req: Request, res: Respons
   }
 
   const items = prepared.map(({ content }) => content);
-  // One notification for the lot, not one per piece.
-  if (status === "pending_approval") await notifyContentSent(items, requester);
+  // One notification for the lot — not one per piece, nor one per request of a longer list.
+  if (status === "pending_approval" && !toBool(req.body.more)) {
+    await notifyContentSent(continued ? await Content.find({ group, client: clientId, status: "pending_approval" }).sort({ createdAt: 1, _id: 1 }) : items, requester);
+  }
   await Content.populate(items, { path: "createdBy", select: "fullName" });
   return ApiResponse(
     res,
     201,
-    `${items.length} ${items.length === 1 ? "piece" : "pieces"} ${status === "draft" ? "saved as drafts" : "sent for approval"}`,
+    items.length
+      ? `${items.length} ${items.length === 1 ? "piece" : "pieces"} ${status === "draft" ? "saved as drafts" : "sent for approval"}`
+      : "Saved",
     { items }
   );
 });
@@ -449,6 +499,10 @@ export const getContent = asyncHandler(async (req: Request, res: Response) => {
 // but kept as `previousFiles`, so the client can compare. Before any revision, files are
 // simply added and removed. On a piece the client has been sent, new files always go first —
 // they are its newest version — whereas a draft still being put together keeps its order.
+//
+// A request carries a limited number of files, so a long list comes over several: the later
+// ones say `extend`. Their files are more of the upload just made — nothing is replaced, and
+// they join that version, right after its files.
 export const updateContent = asyncHandler(async (req: Request, res: Response) => {
   const requester = req.user!;
   const content = await findVisibleContent(requester, req.params.id);
@@ -465,13 +519,13 @@ export const updateContent = asyncHandler(async (req: Request, res: Response) =>
   const dropped = parseList(req.body.removeFiles);
   const keep = parseList(req.body.keepFiles);
   const checked = checkFiles(content.type, uploadedFilesOf(req));
-  const superseded = versioned && checked.length > 0;
+  // A new thumbnail takes the old one's place; `removeThumbnail` takes it off.
+  const thumbnail = checkThumbnail(content.type, thumbnailOf(req));
+  const oldThumbnail = thumbnail || toBool(req.body.removeThumbnail) ? content.videoThumbnail?.url : undefined;
+  const extend = toBool(req.body.extend);
+  const superseded = versioned && checked.length > 0 && !extend;
   const replaced = content.files.filter((file) => dropped.includes(file.url) || (superseded && !keep.includes(file.url)));
   const kept = content.files.filter((file) => !replaced.includes(file));
-  if (kept.length + checked.length > CONTENT_MAX_FILES) {
-    throw new ApiError(422, `A piece can have at most ${CONTENT_MAX_FILES} files`);
-  }
-
   content.files = [
     ...kept,
     ...checked.map(({ file, media }) => ({ url: "pending", name: file.originalname, size: file.size, mimeType: file.mimetype, media })),
@@ -481,21 +535,31 @@ export const updateContent = asyncHandler(async (req: Request, res: Response) =>
   });
 
   const added = await uploadFiles(content.type, checked);
-  content.files = versioned || content.status !== "draft" ? [...added, ...kept] : [...kept, ...added];
+  if (extend) {
+    const stamps = kept.map((file) => file.uploadedAt?.getTime() ?? 0);
+    const newest = Math.max(0, ...stamps);
+    const after = stamps.lastIndexOf(newest) + 1;
+    if (newest) for (const file of added) file.uploadedAt = new Date(newest);
+    content.files = [...kept.slice(0, after), ...added, ...kept.slice(after)];
+  } else content.files = versioned || content.status !== "draft" ? [...added, ...kept] : [...kept, ...added];
   if (versioned && replaced.length) {
     const replacedAt = new Date();
     content.previousFiles.unshift(
       ...replaced.map(({ url, name, size, mimeType, media }) => ({ url, name, size, mimeType, media, replacedAt, revision: content.revisionCount || undefined }))
     );
   }
+  let newThumbnail: IContentFile | undefined;
   try {
+    if (thumbnail) newThumbnail = await uploadThumbnail(content.type, thumbnail);
+    if (newThumbnail || toBool(req.body.removeThumbnail)) content.videoThumbnail = newThumbnail;
     await content.save();
   } catch (error) {
-    await removeFiles(added.map((file) => file.url));
+    await removeFiles([...added.map((file) => file.url), newThumbnail?.url]);
     throw error;
   }
   // Before any revision a dropped file is simply gone; after one, it is kept as a previous version.
   if (!versioned) await removeFiles(dropped);
+  await removeFiles([oldThumbnail]);
 
   return ApiResponse(res, 200, "Content updated successfully", content);
 });
@@ -559,6 +623,7 @@ export const deleteContent = asyncHandler(async (req: Request, res: Response) =>
   await removeFiles([
     ...content.files.map((file) => file.url),
     ...content.previousFiles.map((file) => file.url),
+    content.videoThumbnail?.url,
     ...content.comments.flatMap((entry) => (entry.attachments ?? []).map((file) => file.url)),
     content.imageUrl,
     content.videoUrl,

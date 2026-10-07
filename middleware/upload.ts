@@ -1,8 +1,9 @@
 import multer from "multer";
 import type { RequestHandler } from "express";
 import { ApiError } from "../utils/ApiError";
-import { CONTENT_COMMENT_MAX_ATTACHMENTS, CONTENT_MAX_FILES, MEDIA_MAX_FILE_SIZE, MEDIA_MIME_TYPES } from "../models/content.model";
+import { CONTENT_COMMENT_MAX_ATTACHMENTS, CONTENT_REQUEST_MAX_FILES, MEDIA_MAX_FILE_SIZE, MEDIA_MIME_TYPES } from "../models/content.model";
 import { PROJECT_FILE_MIME_TYPES, PROJECT_MAX_FILES, PROJECT_MAX_FILE_SIZE } from "../models/project.model";
+import { CONTENT_BATCH_MAX_PIECES } from "../validators/content.validator";
 
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const REVIEW_MIME_TYPES = [
@@ -71,27 +72,31 @@ const withContentErrors =
       next(new ApiError(422, messages[err.code] ?? err.message));
     });
 
-// One piece: up to CONTENT_MAX_FILES under `files` (older callers may still send one `file`).
+// One piece: up to CONTENT_REQUEST_MAX_FILES at a time under `files` (older callers may still
+// send one `file`), and its video's cover image under `thumbnail`.
 export const contentUpload = withContentErrors(
   multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: MEDIA_MAX_FILE_SIZE.video, files: CONTENT_MAX_FILES },
+    limits: { fileSize: MEDIA_MAX_FILE_SIZE.video, files: CONTENT_REQUEST_MAX_FILES + 1 },
     fileFilter: contentFileFilter,
   }).fields([
-    { name: "files", maxCount: CONTENT_MAX_FILES },
+    { name: "files", maxCount: CONTENT_REQUEST_MAX_FILES },
     { name: "file", maxCount: 1 },
+    { name: "thumbnail", maxCount: 1 },
   ]),
-  CONTENT_MAX_FILES
+  CONTENT_REQUEST_MAX_FILES
 );
 
-// Several pieces in one request: each piece's files arrive under `files[<piece index>]`.
-// Everything is held in memory until it goes to Spaces, so the total is capped.
-export const CONTENT_BATCH_MAX_FILES = 40;
+// Several pieces in one request: each piece's files arrive under `files[<piece index>]`,
+// and its video's cover image under `thumbnails[<piece index>]`. Everything is held in memory
+// until it goes to Spaces, so the total is capped — a longer list comes over several requests.
+export const CONTENT_BATCH_MAX_FILES = CONTENT_REQUEST_MAX_FILES;
 
 export const contentBatchUpload = withContentErrors(
   multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: MEDIA_MAX_FILE_SIZE.video, files: CONTENT_BATCH_MAX_FILES },
+    // …plus one thumbnail for each piece.
+    limits: { fileSize: MEDIA_MAX_FILE_SIZE.video, files: CONTENT_BATCH_MAX_FILES + CONTENT_BATCH_MAX_PIECES },
     fileFilter: contentFileFilter,
   }).any(),
   CONTENT_BATCH_MAX_FILES

@@ -41,7 +41,7 @@ const router = Router();
  *     Everything an account manager prepares for a client — image posts, carousels, stories,
  *     videos, blog articles, website copy, email newsletters, Google Business posts and ad
  *     creatives. Each piece belongs to a batch in a month: the regular monthly batch, one week of
- *     it, an event, or a one-off (individual) send. Files go to DigitalOcean Spaces (up to 10 per
+ *     it, an event, or a one-off (individual) send. Files go to DigitalOcean Spaces (any number per
  *     piece). Staff save a piece as a draft or send it straight to the client (pending_approval);
  *     the client then approves it or requests a revision, which staff address and send back.
  *     Staff see the content of clients they own, are assigned to, or created (admins see all);
@@ -173,7 +173,7 @@ const router = Router();
  *     summary: Create one content piece
  *     description: >
  *       Roles: employee, executive, assistant_manager, manager, admin, superadmin — for clients
- *       they can see. Send multipart/form-data with up to 10 `files` parts (images, videos or
+ *       they can see. Send multipart/form-data with up to 40 `files` parts (images, videos or
  *       documents, as the type allows), and/or a pasted `link` for video / blog / website /
  *       email. Each type has its own rules — a carousel needs at least 2 images; website needs
  *       `pageName`, email needs `subject`, an ad needs `headline`. Set `status` to
@@ -451,8 +451,8 @@ router.post("/me/:id/comments", protect, authorize("client"), commentUpload, con
  *     summary: Edit a content piece, add files, or remove files
  *     description: >
  *       Send only what changes. Same multipart/form-data or JSON body shape as create, minus
- *       `client` and `type` (fixed at creation). New `files` are added to the piece (10 at most in
- *       total); `removeFiles` (a JSON array or comma-separated list of file URLs) drops existing
+ *       `client` and `type` (fixed at creation). New `files` are added to the piece (40 at most
+ *       in one request — send `extend: true` with a further request to add more to the same upload); `removeFiles` (a JSON array or comma-separated list of file URLs) drops existing
  *       ones, which are then deleted from DigitalOcean Spaces. Once the client has sent the piece
  *       back for a revision, files are versions instead — new `files` go first and replace what the
  *       piece had, except the URLs listed in `keepFiles`, and whatever is replaced or dropped is kept
