@@ -149,21 +149,30 @@ export const notifyTeamReply = quietly(async (content: IContent, actor: IUser, t
 // ── To the staff on the client ───────────────────────────────────────────────
 
 // The client asked for changes.
-export const notifyClientFeedback = quietly(async (content: IContent, actor: IUser, text: string | undefined, attachments: number) => {
+export const notifyClientFeedback = quietly(
+  async (content: IContent, actor: IUser, text: string | undefined, attachments: number, asksForChanges = true) => {
+    const { recipients, company } = await staffOn(content, actor._id);
+    await deliver(recipients, {
+      type: "content_feedback",
+      // A plain message — or anything on an approved piece — doesn't send the piece back.
+      title: asksForChanges ? `${company} asked for changes` : `${company} sent a message`,
+      body: `${content.title} — ${excerptOf(text, attachments)}`,
+      content,
+      actor,
+    });
+  }
+);
+
+// The client approved a piece.
+export const notifyClientApproved = quietly(async (content: IContent, actor: IUser, comment?: string) => {
   const { recipients, company } = await staffOn(content, actor._id);
   await deliver(recipients, {
-    type: "content_feedback",
-    title: `${company} asked for changes`,
-    body: `${content.title} — ${excerptOf(text, attachments)}`,
+    type: "content_approved",
+    title: `${company} approved a piece`,
+    body: comment ? `${content.title} — ${excerptOf(comment, 0)}` : content.title,
     content,
     actor,
   });
-});
-
-// The client approved a piece.
-export const notifyClientApproved = quietly(async (content: IContent, actor: IUser) => {
-  const { recipients, company } = await staffOn(content, actor._id);
-  await deliver(recipients, { type: "content_approved", title: `${company} approved a piece`, body: content.title, content, actor });
 });
 
 // The client rewrote a piece's caption and/or tags (`changed` names which).

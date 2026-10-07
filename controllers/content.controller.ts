@@ -20,6 +20,8 @@ import { ApiError } from "../utils/ApiError";
 import { canAccessClient, clientScopeFor, visibleClientFilter } from "../utils/clientAccess";
 import { CONTENT_REVIEW_ROLES } from "../utils/contentAccess";
 import { uploadToSpaces, deleteFromSpaces } from "../utils/uploadToSpaces";
+import { uploadAttachments } from "../utils/attachments";
+import { announceRevisionRequested, announceRevisionSubmitted } from "../utils/messages";
 import {
   forgetContentNotifications,
   notifyClientApproved,
@@ -89,24 +91,51 @@ const validationMessages = (error: unknown): string[] => {
 // Pieces saved together on the Add Content page share a `group` and are listed and opened
 // as one item. A piece saved on its own (and every older piece) has none: a group of one.
 
+// In revision, with nothing from the team since the client last asked for changes: the client
+// has said what they want, and it is BayShore's turn. (A record from before requests were
+// numbered is read from the client's last comment instead.)
+const awaitingTeamOf = ({ status, comments }: Pick<IContent, "status" | "comments">) => {
+  if (status !== "revision_requested") return false;
+  const thread = comments ?? [];
+  const requests = thread.map((entry) => entry.author === "client" && Boolean(entry.revision));
+  const asked = requests.includes(true) ? requests.lastIndexOf(true) : thread.map((entry) => entry.author === "client").lastIndexOf(true);
+  return !thread.slice(asked + 1).some((entry) => entry.author === "team");
+};
+
 // What a piece tells its group-mates about itself — with its first image, when it has one,
 // for a thumbnail.
-const slimPiece = ({ _id, type, title, status, files, imageUrl }: Pick<IContent, "_id" | "type" | "title" | "status" | "files" | "imageUrl">) => ({
+const slimPiece = ({
   _id,
   type,
   title,
   status,
+  revisionCount,
+  comments,
+  files,
+  imageUrl,
+}: Pick<IContent, "_id" | "type" | "title" | "status" | "revisionCount" | "comments" | "files" | "imageUrl">) => ({
+  _id,
+  type,
+  title,
+  status,
+  revisionCount: revisionCount ?? 0,
+  awaitingTeam: awaitingTeamOf({ status, comments }),
   thumbnail: files?.find((file) => file.media === "image")?.url ?? imageUrl,
 });
 
 // Every piece in this one's group that the caller may see, in the order they were added.
-const piecesOf = async (content: IContent, within: FilterQuery<IContent> = {}) => {
-  if (!content.group) return [slimPiece(content)];
+// `forPage` adds each piece's revisions and its messages — for a single piece's page, whose
+// conversation is the whole group's.
+const piecesOf = async (content: IContent, within: FilterQuery<IContent> = {}, forPage = false) => {
+  type Piece = Parameters<typeof slimPiece>[0] & Pick<IContent, "revisions">;
+  const tell = (piece: Piece) => (forPage ? { ...slimPiece(piece), revisions: piece.revisions ?? [], comments: piece.comments ?? [] } : slimPiece(piece));
+
+  if (!content.group) return [tell(content)];
   const pieces = await Content.find({ $and: [{ group: content.group, client: content.client }, within] })
     .sort({ createdAt: 1, _id: 1 })
-    .select("type title status files imageUrl")
+    .select(`type title status revisionCount files imageUrl ${forPage ? "comments revisions" : "comments.author comments.revision"}`)
     .lean();
-  return pieces.map(slimPiece);
+  return pieces.map(tell);
 };
 
 // A page of groups, newest first. `filter` decides which groups show — one matching piece
@@ -170,12 +199,14 @@ const checkFiles = (type: ContentType, files: Express.Multer.File[]) => {
 };
 
 // Send checked files to DigitalOcean Spaces. If one fails, the ones already sent are removed.
+// Files sent together carry the same `uploadedAt`: they are one version of the piece.
 const uploadFiles = async (type: ContentType, checked: ReturnType<typeof checkFiles>): Promise<IContentFile[]> => {
   const uploaded: IContentFile[] = [];
+  const uploadedAt = new Date();
   try {
     for (const { file, media } of checked) {
       const url = await uploadToSpaces(file, `content/${type}`);
-      uploaded.push({ url, name: file.originalname, size: file.size, mimeType: file.mimetype, media });
+      uploaded.push({ url, name: file.originalname, size: file.size, mimeType: file.mimetype, media, uploadedAt });
     }
     return uploaded;
   } catch (error) {
@@ -185,28 +216,8 @@ const uploadFiles = async (type: ContentType, checked: ReturnType<typeof checkFi
 };
 
 // Files attached to a comment: any media, each within its size cap, sent to Spaces.
-const uploadCommentFiles = async (req: Request): Promise<IContentFile[]> => {
-  const files = ((req.files ?? {}) as Record<string, Express.Multer.File[]>).files ?? [];
-  const checked = files.map((file) => {
-    const media = mediaOfMimeType(file.mimetype);
-    if (!media) throw new ApiError(422, `"${file.originalname}" isn't a supported file type`);
-    if (file.size > MEDIA_MAX_FILE_SIZE[media]) {
-      throw new ApiError(422, `"${file.originalname}" is too large (max ${MEDIA_MAX_FILE_SIZE[media] / (1024 * 1024)}MB for ${media})`);
-    }
-    return { file, media };
-  });
-  const uploaded: IContentFile[] = [];
-  try {
-    for (const { file, media } of checked) {
-      const url = await uploadToSpaces(file, "content/comments");
-      uploaded.push({ url, name: file.originalname, size: file.size, mimeType: file.mimetype, media });
-    }
-    return uploaded;
-  } catch (error) {
-    await removeFiles(uploaded.map((file) => file.url));
-    throw error;
-  }
-};
+const uploadCommentFiles = (req: Request): Promise<IContentFile[]> =>
+  uploadAttachments(((req.files ?? {}) as Record<string, Express.Multer.File[]>).files ?? [], "content/comments");
 
 // Save after adding a comment; if that fails, its attachments are removed again.
 const saveWithAttachments = async (content: IContent, attachments: IContentFile[]) => {
@@ -421,7 +432,7 @@ export const listContent = asyncHandler(async (req: Request, res: Response) => {
 
 export const getContent = asyncHandler(async (req: Request, res: Response) => {
   const content = await findVisibleContent(req.user!, req.params.id);
-  const pieces = await piecesOf(content);
+  const pieces = await piecesOf(content, {}, true);
   await content.populate([
     { path: "client", select: "companyName contactName" },
     { path: "createdBy approvedBy comments.user", select: "fullName" },
@@ -431,6 +442,13 @@ export const getContent = asyncHandler(async (req: Request, res: Response) => {
 });
 
 // Change a piece's details, add files (`files`), and drop files by URL (`removeFiles`).
+//
+// Once the client has sent a piece back for a revision, its files are versions: new files are
+// the revised version, so they go first and take the place of what the piece had — every
+// file it had, except those named in `keepFiles`. What is replaced or dropped is not deleted
+// but kept as `previousFiles`, so the client can compare. Before any revision, files are
+// simply added and removed. On a piece the client has been sent, new files always go first —
+// they are its newest version — whereas a draft still being put together keeps its order.
 export const updateContent = asyncHandler(async (req: Request, res: Response) => {
   const requester = req.user!;
   const content = await findVisibleContent(requester, req.params.id);
@@ -443,9 +461,13 @@ export const updateContent = asyncHandler(async (req: Request, res: Response) =>
   applyBatch(content, req.body);
   applyDetails(content, req.body);
 
+  const versioned = (content.revisionCount ?? 0) > 0;
   const dropped = parseList(req.body.removeFiles);
-  const kept = content.files.filter((file) => !dropped.includes(file.url));
+  const keep = parseList(req.body.keepFiles);
   const checked = checkFiles(content.type, uploadedFilesOf(req));
+  const superseded = versioned && checked.length > 0;
+  const replaced = content.files.filter((file) => dropped.includes(file.url) || (superseded && !keep.includes(file.url)));
+  const kept = content.files.filter((file) => !replaced.includes(file));
   if (kept.length + checked.length > CONTENT_MAX_FILES) {
     throw new ApiError(422, `A piece can have at most ${CONTENT_MAX_FILES} files`);
   }
@@ -459,14 +481,21 @@ export const updateContent = asyncHandler(async (req: Request, res: Response) =>
   });
 
   const added = await uploadFiles(content.type, checked);
-  content.files = [...kept, ...added];
+  content.files = versioned || content.status !== "draft" ? [...added, ...kept] : [...kept, ...added];
+  if (versioned && replaced.length) {
+    const replacedAt = new Date();
+    content.previousFiles.unshift(
+      ...replaced.map(({ url, name, size, mimeType, media }) => ({ url, name, size, mimeType, media, replacedAt, revision: content.revisionCount || undefined }))
+    );
+  }
   try {
     await content.save();
   } catch (error) {
     await removeFiles(added.map((file) => file.url));
     throw error;
   }
-  await removeFiles(dropped);
+  // Before any revision a dropped file is simply gone; after one, it is kept as a previous version.
+  if (!versioned) await removeFiles(dropped);
 
   return ApiResponse(res, 200, "Content updated successfully", content);
 });
@@ -489,12 +518,32 @@ export const changeContentStatus = asyncHandler(async (req: Request, res: Respon
   }
 
   content.status = target;
+  // A note for the client when a revised piece goes back to them: it is kept with the
+  // revision it answers (the save hook stamps when, and by whom).
+  const note: string = req.body.note ?? "";
+  if (current === "revision_requested" && target === "pending_approval") {
+    const open = content.revisions[content.revisions.length - 1];
+    if (note && open && !open.submittedAt) open.note = note;
+    // Sent back without a message of its own: the conversation still says it happened.
+    content.comments.push({
+      author: "team",
+      user: requester._id,
+      name: requester.fullName,
+      text: "Sent the revised piece back for approval.",
+      attachments: [],
+      ...(open ? { revision: open.number } : {}),
+      createdAt: new Date(),
+    });
+  }
   await content.save();
 
   // The client hears when something comes (back) to them — not about the other moves.
   if (target === "pending_approval") {
-    if (current === "revision_requested") await notifyContentResubmitted(content, requester);
-    else await notifyContentSent([content], requester);
+    if (current === "revision_requested") {
+      await notifyContentResubmitted(content, requester);
+      // …and the conversation shows the revised piece coming back, with the team's note.
+      await announceRevisionSubmitted(content, requester, note, content.revisions[content.revisions.length - 1]?.number);
+    } else await notifyContentSent([content], requester);
   }
 
   return ApiResponse(res, 200, `Content is now ${target}`, content);
@@ -509,6 +558,7 @@ export const deleteContent = asyncHandler(async (req: Request, res: Response) =>
   // deleteFromSpaces ignores anything that isn't a Spaces URL (e.g. a pasted link).
   await removeFiles([
     ...content.files.map((file) => file.url),
+    ...content.previousFiles.map((file) => file.url),
     ...content.comments.flatMap((entry) => (entry.attachments ?? []).map((file) => file.url)),
     content.imageUrl,
     content.videoUrl,
@@ -518,25 +568,35 @@ export const deleteContent = asyncHandler(async (req: Request, res: Response) =>
   return ApiResponse(res, 200, "Content deleted successfully");
 });
 
-// A team reply on the thread — doesn't move the status; the account manager
-// sends the item back for approval separately once it's actually addressed.
+// A team reply on the thread. On its own it doesn't move the status. Sent with
+// `kind: "revision"` while the piece is in revision, it is the team's feedback on that
+// revision — what they changed, with any files — and is kept with it; adding `resubmit`
+// sends the revised piece back for approval in the same step.
 export const addContentComment = asyncHandler(async (req: Request, res: Response) => {
   const requester = req.user!;
   const content = await findVisibleContent(requester, req.params.id);
 
-  const attachments = await uploadCommentFiles(req);
-  content.comments.push({
-    author: "team",
-    user: requester._id,
-    name: requester.fullName,
-    text: req.body.text ?? "",
-    attachments,
-    createdAt: new Date(),
-  });
-  await saveWithAttachments(content, attachments);
-  await notifyTeamReply(content, requester, req.body.text, attachments.length);
+  const open =
+    req.body.kind === "revision" && content.status === "revision_requested"
+      ? content.revisions.find((entry) => entry.number === content.revisionCount && !entry.submittedAt)
+      : undefined;
+  const resubmit = Boolean(open) && toBool(req.body.resubmit);
 
-  return ApiResponse(res, 200, "Comment added", content);
+  const attachments = await uploadCommentFiles(req);
+  const said = { text: req.body.text ?? "", attachments, user: requester._id, name: requester.fullName, createdAt: new Date() };
+  content.comments.push({ author: "team", ...said, ...(open ? { revision: open.number } : {}) });
+  if (open) {
+    open.responses.push(said);
+    if (resubmit) content.status = "pending_approval";
+  }
+  await saveWithAttachments(content, attachments);
+
+  if (resubmit) {
+    await notifyContentResubmitted(content, requester);
+    await announceRevisionSubmitted(content, requester, said.text, open?.number);
+  } else await notifyTeamReply(content, requester, req.body.text, attachments.length);
+
+  return ApiResponse(res, 200, resubmit ? "Revised piece sent back for approval" : "Comment added", content);
 });
 
 // ── The client's own portal: their own company's sent content only ──────────
@@ -587,7 +647,7 @@ export const getMyContent = asyncHandler(async (req: Request, res: Response) => 
   if (!content) throw new ApiError(404, "Content not found");
 
   // The other pieces sent with it — never one that is still a draft.
-  const pieces = await piecesOf(content, { status: { $ne: "draft" } });
+  const pieces = await piecesOf(content, { status: { $ne: "draft" } }, true);
 
   return ApiResponse(res, 200, "Content fetched successfully", { ...content.toJSON(), pieces });
 });
@@ -641,19 +701,33 @@ export const approveMyContent = asyncHandler(async (req: Request, res: Response)
   if (content.status === "draft") throw new ApiError(400, "This item hasn't been sent for approval yet");
   if (content.status === "approved") throw new ApiError(400, "This item is already approved");
 
+  // A note left with the approval is an ordinary comment — it asks for nothing. Without one,
+  // the conversation still says the piece was approved.
+  const comment: string = req.body?.comment ?? "";
+  content.comments.push({
+    author: "client",
+    user: req.user!._id,
+    name: req.user!.fullName,
+    text: comment || "Approved this piece.",
+    attachments: [],
+    createdAt: new Date(),
+  });
+
   content.status = "approved";
   // Stamped here too, not only by the save hook's request context.
   content.approvedAt = new Date();
   content.approvedBy = req.user!._id;
   await content.save();
-  await notifyClientApproved(content, req.user!);
+  await notifyClientApproved(content, req.user!, comment);
   await content.populate("createdBy approvedBy comments.user", "fullName");
 
   return ApiResponse(res, 200, "Content approved", content);
 });
 
-// The client's "Request Edit" — always moves the item to revision_requested,
-// same as the client-portal's comment box.
+// What the client writes on a piece. `kind: "revision"` is a request for changes: it moves the
+// piece to revision_requested — an approved piece included, which reopens it. `kind: "message"`
+// is only a message: the piece stays where it is. With no kind (older callers) it is a request
+// for changes on a piece that is still open, and a message on an approved one.
 export const addMyContentComment = asyncHandler(async (req: Request, res: Response) => {
   const clientId = requireClientAccount(req.user!);
   const requester = req.user!;
@@ -661,7 +735,15 @@ export const addMyContentComment = asyncHandler(async (req: Request, res: Respon
   const content = await Content.findOne({ _id: req.params.id, client: clientId });
   if (!content) throw new ApiError(404, "Content not found");
   if (content.status === "draft") throw new ApiError(400, "This item hasn't been sent for approval yet");
-  if (content.status === "approved") throw new ApiError(400, "This item is already approved");
+
+  const asksForChanges = req.body.kind === "revision" || (req.body.kind !== "message" && content.status !== "approved");
+  // A request for changes says which revision round it belongs to: the one already under
+  // way when the piece is in revision, otherwise a new one.
+  const round = !asksForChanges
+    ? undefined
+    : content.status === "revision_requested"
+      ? content.revisionCount || undefined
+      : (content.revisionCount ?? 0) + 1;
 
   const attachments = await uploadCommentFiles(req);
   content.comments.push({
@@ -670,11 +752,30 @@ export const addMyContentComment = asyncHandler(async (req: Request, res: Respon
     name: requester.fullName,
     text: req.body.text ?? "",
     attachments,
+    ...(round ? { revision: round } : {}),
     createdAt: new Date(),
   });
-  content.status = "revision_requested";
+  // …and into that revision's own record: the first request opens it, later ones add to it.
+  if (round) {
+    const request = { text: req.body.text ?? "", attachments, user: requester._id, name: requester.fullName, createdAt: new Date() };
+    const revision = content.revisions.find((entry) => entry.number === round);
+    if (revision) revision.requests.push(request);
+    else {
+      content.revisions.push({
+        number: round,
+        requests: [request],
+        responses: [],
+        requestedAt: request.createdAt,
+        requestedBy: requester._id,
+        requestedByName: requester.fullName,
+      });
+    }
+  }
+  if (asksForChanges) content.status = "revision_requested";
   await saveWithAttachments(content, attachments);
-  await notifyClientFeedback(content, requester, req.body.text, attachments.length);
+  await notifyClientFeedback(content, requester, req.body.text, attachments.length, asksForChanges);
+  // A request for changes also shows up in the client's conversation with the team.
+  if (round) await announceRevisionRequested(content, requester, req.body.text, attachments, round);
   await content.populate("createdBy approvedBy comments.user", "fullName");
 
   return ApiResponse(res, 200, "Comment added", content);

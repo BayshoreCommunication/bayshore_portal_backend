@@ -23,6 +23,7 @@ import {
   createContentBatchRules,
   updateContentRules,
   changeStatusRules,
+  approveMyContentRules,
   commentRules,
   listContentRules,
   listMyContentRules,
@@ -100,7 +101,51 @@ const router = Router();
  *               user: { type: string }
  *               name: { type: string }
  *               text: { type: string }
+ *               revision: { type: integer, description: "On a client's request for changes, the revision round it belongs to" }
  *               createdAt: { type: string, format: date-time }
+ *         previousFiles:
+ *           type: array
+ *           description: Files replaced while answering a revision, newest first
+ *           items:
+ *             allOf:
+ *               - $ref: '#/components/schemas/ContentFile'
+ *               - type: object
+ *                 properties:
+ *                   replacedAt: { type: string, format: date-time }
+ *                   revision: { type: integer }
+ *         revisionCount: { type: integer, description: How many times the piece has been sent back for a revision }
+ *         revisions:
+ *           type: array
+ *           description: Every revision the piece has been through, oldest first
+ *           items:
+ *             type: object
+ *             properties:
+ *               number: { type: integer }
+ *               requests:
+ *                 type: array
+ *                 description: What the client asked for in this round
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     text: { type: string }
+ *                     attachments: { type: array, items: { $ref: '#/components/schemas/ContentFile' } }
+ *                     name: { type: string }
+ *                     createdAt: { type: string, format: date-time }
+ *               responses:
+ *                 type: array
+ *                 description: The team's feedback on this round, with any files
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     text: { type: string }
+ *                     attachments: { type: array, items: { $ref: '#/components/schemas/ContentFile' } }
+ *                     name: { type: string }
+ *                     createdAt: { type: string, format: date-time }
+ *               requestedAt: { type: string, format: date-time }
+ *               requestedByName: { type: string }
+ *               submittedAt: { type: string, format: date-time, description: When the team sent the revised piece back }
+ *               submittedByName: { type: string }
+ *               note: { type: string, description: The team's note with the revised piece }
  *         createdBy: { type: string }
  *         submittedAt: { type: string, format: date-time }
  *         approvedBy: { type: string }
@@ -330,6 +375,14 @@ router.patch("/me/:id", protect, authorize("client"), contentIdRule, updateMyCon
  *       - bearerAuth: []
  *     parameters:
  *       - { in: path, name: id, required: true, schema: { type: string } }
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               comment: { type: string, maxLength: 1000, description: An optional note left with the approval; added to the comments }
  *     responses:
  *       200:
  *         description: Content approved
@@ -338,14 +391,14 @@ router.patch("/me/:id", protect, authorize("client"), contentIdRule, updateMyCon
  *       404:
  *         description: Not found, or not yours
  */
-router.patch("/me/:id/approve", protect, authorize("client"), contentIdRule, validate, approveMyContent);
+router.patch("/me/:id/approve", protect, authorize("client"), contentIdRule, approveMyContentRules, validate, approveMyContent);
 
 /**
  * @swagger
  * /content/me/{id}/comments:
  *   post:
- *     summary: Request a revision on one of the signed-in client's own content items
- *     description: Adds the comment and moves the item to revision_requested, same as the "Request Edit" button.
+ *     summary: Comment on one of the signed-in client's own content items
+ *     description: With kind set to revision, adds the comment and moves the item to revision_requested, starting a new revision round unless one is under way; this also reopens an approved item. With kind set to message it only adds the comment. With no kind it asks for changes on an item that is waiting or in revision, and only adds the comment on an approved one.
  *     tags: [Content]
  *     security:
  *       - bearerAuth: []
@@ -360,6 +413,7 @@ router.patch("/me/:id/approve", protect, authorize("client"), contentIdRule, val
  *             type: object
  *             properties:
  *               text: { type: string, maxLength: 1000 }
+ *               kind: { type: string, enum: [message, revision] }
  *               files: { type: array, maxItems: 5, items: { type: string, format: binary } }
  *         application/json:
  *           schema:
@@ -367,11 +421,12 @@ router.patch("/me/:id/approve", protect, authorize("client"), contentIdRule, val
  *             required: [text]
  *             properties:
  *               text: { type: string, maxLength: 1000 }
+ *               kind: { type: string, enum: [message, revision] }
  *     responses:
  *       200:
  *         description: Comment added
  *       400:
- *         description: Not yet sent for approval, or already approved
+ *         description: Not yet sent for approval
  *       404:
  *         description: Not found, or not yours
  */
@@ -398,8 +453,10 @@ router.post("/me/:id/comments", protect, authorize("client"), commentUpload, con
  *       Send only what changes. Same multipart/form-data or JSON body shape as create, minus
  *       `client` and `type` (fixed at creation). New `files` are added to the piece (10 at most in
  *       total); `removeFiles` (a JSON array or comma-separated list of file URLs) drops existing
- *       ones, which are then deleted from DigitalOcean Spaces. An approved piece can only be
- *       edited by a manager.
+ *       ones, which are then deleted from DigitalOcean Spaces. Once the client has sent the piece
+ *       back for a revision, files are versions instead — new `files` go first and replace what the
+ *       piece had, except the URLs listed in `keepFiles`, and whatever is replaced or dropped is kept
+ *       in `previousFiles` rather than deleted. An approved piece can only be edited by a manager.
  *     tags: [Content]
  *     security:
  *       - bearerAuth: []
@@ -466,6 +523,7 @@ router.delete("/:id", protect, authorize("superadmin"), contentIdRule, validate,
  *             required: [status]
  *             properties:
  *               status: { type: string, enum: [draft, pending_approval, revision_requested, approved] }
+ *               note: { type: string, maxLength: 1000, description: What changed, for the client. Kept with the revision when a revised item is sent back for approval }
  *     responses:
  *       200:
  *         description: Content status changed
@@ -491,7 +549,7 @@ router.patch(
  * /content/{id}/comments:
  *   post:
  *     summary: Reply on a content item's comment thread
- *     description: A team reply — unlike the client's, this doesn't change the status.
+ *     description: A team reply. On its own it doesn't change the status. With kind set to revision while the item is in revision, it is kept as the team's feedback on that revision; adding resubmit also sends the revised item back for approval.
  *     tags: [Content]
  *     security:
  *       - bearerAuth: []
@@ -506,6 +564,8 @@ router.patch(
  *             type: object
  *             properties:
  *               text: { type: string, maxLength: 1000 }
+ *               kind: { type: string, enum: [revision], description: Keep it as feedback on the revision under way }
+ *               resubmit: { type: boolean, description: With kind revision, also send the revised item back for approval }
  *               files: { type: array, maxItems: 5, items: { type: string, format: binary } }
  *         application/json:
  *           schema:
@@ -513,6 +573,8 @@ router.patch(
  *             required: [text]
  *             properties:
  *               text: { type: string, maxLength: 1000 }
+ *               kind: { type: string, enum: [revision] }
+ *               resubmit: { type: boolean }
  *     responses:
  *       200:
  *         description: Comment added

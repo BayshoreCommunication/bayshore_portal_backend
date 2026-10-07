@@ -7,6 +7,7 @@ import {
   CONTENT_CTAS,
   CONTENT_EVENT_NAME_MAX_LENGTH,
   CONTENT_HEADLINE_MAX_LENGTH,
+  CONTENT_REVISION_NOTE_MAX_LENGTH,
   CONTENT_SENT_REASON_MAX_LENGTH,
   CONTENT_STATUSES,
   CONTENT_SUBJECT_MAX_LENGTH,
@@ -153,6 +154,8 @@ export const updateContentRules: ValidationChain[] = [
   ...detailRules,
   // URLs of existing files to drop — a JSON array, or a JSON / comma-separated string.
   body("removeFiles").optional(),
+  // URLs of existing files to leave in the piece when new files replace the rest (after a revision).
+  body("keepFiles").optional(),
 ];
 
 // What a client may change on a piece sent to them: its caption and tags.
@@ -175,6 +178,21 @@ export const updateMyContentRules: ValidationChain[] = [
 
 export const changeStatusRules: ValidationChain[] = [
   body("status").isIn(CONTENT_STATUSES).withMessage(`status must be one of: ${CONTENT_STATUSES.join(", ")}`),
+  // What changed, for the client — kept when a revised piece is sent back for approval.
+  body("note")
+    .optional()
+    .customSanitizer((value) => (typeof value === "string" ? value.trim() : ""))
+    .isLength({ max: CONTENT_REVISION_NOTE_MAX_LENGTH })
+    .withMessage(`Note cannot exceed ${CONTENT_REVISION_NOTE_MAX_LENGTH} characters`),
+];
+
+// A note the client may leave with their approval.
+export const approveMyContentRules: ValidationChain[] = [
+  body("comment")
+    .optional()
+    .customSanitizer((value) => (typeof value === "string" ? value.trim() : ""))
+    .isLength({ max: CONTENT_COMMENT_MAX_LENGTH })
+    .withMessage(`Comment cannot exceed ${CONTENT_COMMENT_MAX_LENGTH} characters`),
 ];
 
 // Text, attached files (multipart, parsed before this runs), or both.
@@ -189,6 +207,11 @@ export const commentRules: ValidationChain[] = [
     })
     .isLength({ max: CONTENT_COMMENT_MAX_LENGTH })
     .withMessage(`Comment cannot exceed ${CONTENT_COMMENT_MAX_LENGTH} characters`),
+  // From the client's portal: "message" keeps the piece where it is; "revision" (the default) asks for changes.
+  // From the team: "revision" makes it their feedback on the revision under way.
+  body("kind").optional().isIn(["message", "revision"]).withMessage("kind must be message or revision"),
+  // The team only, with kind "revision": also send the revised piece back for approval.
+  body("resubmit").optional().isBoolean().withMessage("resubmit must be true or false"),
 ];
 
 const paging: ValidationChain[] = [

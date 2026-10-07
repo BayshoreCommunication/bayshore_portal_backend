@@ -302,7 +302,7 @@ router.get("/", protect, authorize(...STAFF_ROLES), listClientsRules, validate, 
  *         description: Validation failed
  *   delete:
  *     summary: Delete a client and all of its login accounts
- *     description: Allowed roles: admin, superadmin. Its sessions are revoked and the deletion is recorded in the audit log.
+ *     description: "Allowed roles: admin, superadmin. Its sessions are revoked and the deletion is recorded in the audit log."
  *     tags: [Clients]
  *     security:
  *       - bearerAuth: []

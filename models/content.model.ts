@@ -85,7 +85,8 @@ export type ContentBatchType = (typeof CONTENT_BATCH_TYPES)[number];
 
 // draft (being prepared by the account manager) → pending_approval (sent to the
 // client) → approved, or revision_requested if the client asks for a change
-// (which the account manager addresses and sends back to pending_approval).
+// (which the account manager addresses and sends back to pending_approval). The
+// client can also reopen an approved piece by asking for a revision.
 export const CONTENT_STATUSES = ["draft", "pending_approval", "revision_requested", "approved"] as const;
 export type ContentStatus = (typeof CONTENT_STATUSES)[number];
 
@@ -100,6 +101,8 @@ export const CONTENT_CAPTION_MAX_LENGTH = 2000;
 export const CONTENT_COMMENT_MAX_LENGTH = 1000;
 // Images, videos or documents attached to one comment.
 export const CONTENT_COMMENT_MAX_ATTACHMENTS = 5;
+// The team's note when a revised piece goes back to the client.
+export const CONTENT_REVISION_NOTE_MAX_LENGTH = 1000;
 export const CONTENT_SENT_REASON_MAX_LENGTH = 300;
 export const CONTENT_EVENT_NAME_MAX_LENGTH = 150;
 export const CONTENT_SUBJECT_MAX_LENGTH = 200;
@@ -112,6 +115,10 @@ export interface IContentFile {
   size: number;
   mimeType: string;
   media: ContentMedia;
+  // When it was added to the piece — the same moment for files added in one save, which is
+  // how the portals tell the newest version from what the piece had before. Missing on files
+  // from before this was kept, and on comment attachments.
+  uploadedAt?: Date;
 }
 
 export interface IContentComment {
@@ -121,7 +128,50 @@ export interface IContentComment {
   // May be empty when the comment is only attachments.
   text: string;
   attachments?: IContentFile[];
+  // On a client's request for changes: the revision round it belongs to (1, 2, …). The first
+  // comment with a number is the one that opened that round.
+  revision?: number;
   createdAt: Date;
+}
+
+// A file the piece used to have: replaced while answering a revision, and kept so the client
+// can still see what it looked like before.
+export interface IContentPreviousFile extends IContentFile {
+  replacedAt: Date;
+  // The revision it was replaced in.
+  revision?: number;
+}
+
+// One thing said during a revision — the client asking for something, or the team answering:
+// their words, and any files they sent.
+export interface IContentRevisionRequest {
+  text: string;
+  attachments?: IContentFile[];
+  user?: mongoose.Types.ObjectId;
+  name?: string;
+  createdAt: Date;
+}
+
+// One round of changes on a piece: what the client asked for, and BayShore's answer. A piece
+// — a reel, a post, an image, a video — can go through any number of these.
+export interface IContentRevision {
+  // 1, 2, … in the order they were asked for.
+  number: number;
+  // Everything the client asked for in this round, in order. Empty when a manager opened the
+  // round on the client's behalf.
+  requests: IContentRevisionRequest[];
+  requestedAt: Date;
+  requestedBy?: mongoose.Types.ObjectId;
+  requestedByName?: string;
+  // The team's feedback on it, in order: what they changed, with any files — before or as
+  // they send the piece back.
+  responses: IContentRevisionRequest[];
+  // Filled in when the team sends the revised piece back for approval — with their note,
+  // if they left one.
+  submittedAt?: Date;
+  submittedBy?: mongoose.Types.ObjectId;
+  submittedByName?: string;
+  note?: string;
 }
 
 export interface IContent extends Document {
@@ -144,11 +194,18 @@ export interface IContent extends Document {
   isIndividual: boolean;
 
   status: ContentStatus;
+  // How many times this piece has been sent back for a revision — the length of `revisions`,
+  // kept beside it so lists can show it without loading them.
+  revisionCount: number;
+  // Every revision this piece has been through, oldest first.
+  revisions: IContentRevision[];
 
   // Up to CONTENT_MAX_FILES uploads (DigitalOcean Spaces), and/or a pasted link
   // for the kinds that allow one (video, blog, website, email).
   files: IContentFile[];
   link?: string;
+  // Files replaced during a revision, newest first. `files` is always the piece as it stands.
+  previousFiles: IContentPreviousFile[];
 
   // Kind-specific details.
   pageName?: string; // website
@@ -192,6 +249,7 @@ export interface IContent extends Document {
  *         size: { type: number, description: Bytes }
  *         mimeType: { type: string, example: image/png }
  *         media: { type: string, enum: [image, video, doc] }
+ *         uploadedAt: { type: string, format: date-time, description: When it was added to the piece — the same for files added in one save. Missing on older files and on comment attachments }
  */
 
 const contentFileSchema = new Schema<IContentFile>(
@@ -201,6 +259,7 @@ const contentFileSchema = new Schema<IContentFile>(
     size: { type: Number, default: 0 },
     mimeType: { type: String, trim: true, default: "" },
     media: { type: String, enum: CONTENT_MEDIA, required: [true, "File media is required"] },
+    uploadedAt: { type: Date },
   },
   { _id: false }
 );
@@ -224,7 +283,52 @@ const contentCommentSchema = new Schema<IContentComment>(
         message: `A comment can have at most ${CONTENT_COMMENT_MAX_ATTACHMENTS} attachments`,
       },
     },
+    revision: { type: Number },
     createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const contentPreviousFileSchema = new Schema<IContentPreviousFile>(
+  {
+    url: { type: String, required: [true, "File URL is required"], trim: true },
+    name: { type: String, trim: true, default: "" },
+    size: { type: Number, default: 0 },
+    mimeType: { type: String, trim: true, default: "" },
+    media: { type: String, enum: CONTENT_MEDIA, required: [true, "File media is required"] },
+    replacedAt: { type: Date, default: Date.now },
+    revision: { type: Number },
+  },
+  { _id: false }
+);
+
+const contentRevisionRequestSchema = new Schema<IContentRevisionRequest>(
+  {
+    text: { type: String, trim: true, default: "" },
+    attachments: { type: [contentFileSchema], default: [] },
+    user: { type: Schema.Types.ObjectId, ref: "User" },
+    name: { type: String, trim: true },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const contentRevisionSchema = new Schema<IContentRevision>(
+  {
+    number: { type: Number, required: [true, "Revision number is required"] },
+    requests: { type: [contentRevisionRequestSchema], default: [] },
+    responses: { type: [contentRevisionRequestSchema], default: [] },
+    requestedAt: { type: Date, default: Date.now },
+    requestedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    requestedByName: { type: String, trim: true },
+    submittedAt: { type: Date },
+    submittedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    submittedByName: { type: String, trim: true },
+    note: {
+      type: String,
+      trim: true,
+      maxlength: [CONTENT_REVISION_NOTE_MAX_LENGTH, `Note cannot exceed ${CONTENT_REVISION_NOTE_MAX_LENGTH} characters`],
+    },
   },
   { _id: false }
 );
@@ -266,6 +370,8 @@ const contentSchema = new Schema<IContent>(
     isIndividual: { type: Boolean, default: false },
 
     status: { type: String, enum: CONTENT_STATUSES, default: "draft" },
+    revisionCount: { type: Number, default: 0 },
+    revisions: { type: [contentRevisionSchema], default: [] },
 
     files: {
       type: [contentFileSchema],
@@ -276,6 +382,7 @@ const contentSchema = new Schema<IContent>(
       },
     },
     link: { type: String, trim: true, maxlength: [CONTENT_URL_MAX_LENGTH, "Link is too long"] },
+    previousFiles: { type: [contentPreviousFileSchema], default: [] },
 
     pageName: { type: String, trim: true, maxlength: [120, "Page name cannot exceed 120 characters"] },
     pageUrl: { type: String, trim: true, maxlength: [CONTENT_URL_MAX_LENGTH, "Page URL is too long"] },
@@ -381,7 +488,8 @@ contentSchema.pre("validate", function () {
 // Moving through the approval steps stamps when (and by whom) it happened;
 // sending an item back to draft clears the steps that no longer hold.
 contentSchema.pre("save", function () {
-  const actorId = getRequestContext()?.actor?.id;
+  const context = getRequestContext()?.actor;
+  const actorId = context?.id;
 
   if (this.isNew && actorId && !this.createdBy) this.createdBy = new mongoose.Types.ObjectId(actorId);
   if (!this.isModified("status")) return;
@@ -395,6 +503,24 @@ contentSchema.pre("save", function () {
     return;
   }
   if (!this.submittedAt) this.submittedAt = new Date();
+  // Each move into revision is one more round — more feedback during a round isn't. The round
+  // gets its record here, unless whoever asked already wrote it (with what they asked for).
+  if (this.status === "revision_requested") {
+    const number = (this.revisionCount ?? 0) + 1;
+    this.revisionCount = number;
+    if (!this.revisions.some((revision) => revision.number === number)) {
+      this.revisions.push({ number, requests: [], responses: [], requestedAt: new Date(), requestedBy: actor, requestedByName: context?.name });
+    }
+  }
+  // Sent (back) to the client: that is the team's answer to the round still open, if there is one.
+  if (this.status === "pending_approval") {
+    const open = this.revisions[this.revisions.length - 1];
+    if (open && !open.submittedAt) {
+      open.submittedAt = new Date();
+      open.submittedBy = actor;
+      open.submittedByName = context?.name;
+    }
+  }
   if (this.status === "pending_approval" || this.status === "revision_requested") {
     this.approvedAt = undefined;
     this.approvedBy = undefined;

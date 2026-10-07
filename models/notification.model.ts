@@ -2,7 +2,8 @@ import mongoose, { Schema, Document } from "mongoose";
 
 // ── What a notification is about ─────────────────────────────────────────────
 
-// Something happened on a piece of content that the other side should know about.
+// Something happened that the other side should know about: on a piece of content, or in
+// the conversation between a client and the team.
 //
 // To the client (their portal):
 //   content_sent        the team sent one or more pieces for approval
@@ -13,6 +14,10 @@ import mongoose, { Schema, Document } from "mongoose";
 //   content_feedback        the client asked for changes
 //   content_approved        the client approved a piece
 //   content_caption_edited  the client rewrote a piece's caption or tags
+//
+// To either side:
+//   message  the other side wrote in the conversation (or the team added a meeting). Messages
+//            not read yet share one notification — `pieces` counts them.
 export const NOTIFICATION_TYPES = [
   "content_sent",
   "content_resubmitted",
@@ -20,6 +25,7 @@ export const NOTIFICATION_TYPES = [
   "content_feedback",
   "content_approved",
   "content_caption_edited",
+  "message",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
