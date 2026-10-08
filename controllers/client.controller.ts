@@ -155,6 +155,8 @@ export const listClients = asyncHandler(async (req: Request, res: Response) => {
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
+      // A list card has no use for the onboarding answers; they come with the single client.
+      .select("-onboarding")
       .populate("accountManager", "fullName email avatar")
       .lean(),
     Client.countDocuments(filter),
