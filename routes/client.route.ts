@@ -3,6 +3,7 @@ import {
   createClient,
   listClients,
   getClient,
+  getMyPortal,
   updateClient,
   deleteClient,
 } from "../controllers/client.controller";
@@ -318,6 +319,22 @@ router.get("/", protect, authorize(...STAFF_ROLES), listClientsRules, validate, 
  *       404:
  *         description: Client not found
  */
+/**
+ * @swagger
+ * /clients/me/portal:
+ *   get:
+ *     summary: The portal pages the signed-in client is shown
+ *     description: For a client. `menus` lists the keys of the portal pages the team has left on for them (dashboard, onboarding, reports, content, leads, projects, services, calendar, messages, payments, notifications) — every one, when the team hasn't chosen.
+ *     tags: [Clients]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: The keys of the pages to show
+ */
+// Before "/:id", which is for the team.
+router.get("/me/portal", protect, authorize("client"), getMyPortal);
+
 router.get("/:id", protect, authorize(...STAFF_ROLES), clientIdRule, validate, getClient);
 router.patch("/:id", protect, authorize(...CAN_MANAGE), clientIdRule, updateClientRules, validate, updateClient);
 router.delete("/:id", protect, authorize(...CAN_DELETE), clientIdRule, validate, deleteClient);

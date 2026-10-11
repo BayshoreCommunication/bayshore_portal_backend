@@ -1,5 +1,5 @@
 import { body, param, query, type ValidationChain } from "express-validator";
-import { CLIENT_NOTES_MAX_LENGTH, CLIENT_STATUSES } from "../models/client.model";
+import { CLIENT_NOTES_MAX_LENGTH, CLIENT_PORTAL_MENUS, CLIENT_STATUSES } from "../models/client.model";
 import { PHONE_REGEX } from "../models/user.model";
 import { normalizePhone } from "../utils/phone";
 
@@ -35,6 +35,12 @@ const optionalFields: ValidationChain[] = [
     .optional({ nullable: true, checkFalsy: true })
     .isMongoId()
     .withMessage("accountManager must be a valid user id"),
+  // What is inside is checked by the client model itself (its lengths, numbers and dates).
+  body("details").optional().isObject().withMessage("details must be an object"),
+  body("portalMenus").optional().isArray().withMessage("portalMenus must be a list of portal pages"),
+  body("portalMenus.*")
+    .isIn([...CLIENT_PORTAL_MENUS])
+    .withMessage(`portalMenus can only hold: ${CLIENT_PORTAL_MENUS.join(", ")}`),
   body("team").optional().isArray().withMessage("team must be a list of user ids"),
   body("team.*").isMongoId().withMessage("team must only contain valid user ids"),
 ];
@@ -45,10 +51,12 @@ export const createClientRules: ValidationChain[] = [
   body("email").trim().isEmail().withMessage("A valid email address is required"),
   body("serviceTypes").isArray({ min: 1 }).withMessage("Select at least one service type"),
   body("startDate").isISO8601().withMessage("Start date must be a valid date"),
+  // Only for a client who gets a portal login: without one, no login is made.
   body("password")
+    .optional({ checkFalsy: true })
     .isString()
     .isLength({ min: 8, max: 72 })
-    .withMessage("Password is required and must be between 8 and 72 characters"),
+    .withMessage("The portal password must be between 8 and 72 characters"),
   ...optionalFields,
 ];
 

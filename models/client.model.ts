@@ -8,6 +8,12 @@ export type ClientStatus = (typeof CLIENT_STATUSES)[number];
 
 export const CLIENT_NOTES_MAX_LENGTH = 500;
 
+// The pages of the client portal a client can be given or refused, each by the key of its
+// entry in the portal's menu. Settings isn't among them: a client always reaches their own
+// account.
+export const CLIENT_PORTAL_MENUS = ["dashboard", "onboarding", "reports", "content", "leads", "projects", "services", "calendar", "messages", "payments", "notifications"] as const;
+export type ClientPortalMenu = (typeof CLIENT_PORTAL_MENUS)[number];
+
 // ── Onboarding ───────────────────────────────────────────────────────────────
 
 // What a client tells us on the onboarding form (client-portal: component/client-onboarding):
@@ -24,8 +30,8 @@ export const ONBOARDING_HAS = ["yes", "no", "unsure"] as const;
 export type OnboardingYesNo = (typeof ONBOARDING_YES_NO)[number];
 export type OnboardingHas = (typeof ONBOARDING_HAS)[number];
 
-// "Do you need a new website?"
-export const ONBOARDING_WEBSITE_NEEDS = ["new", "redesign", "no"] as const;
+// "Do you need a new website?" — "unsure" leaves it for us to recommend after a review.
+export const ONBOARDING_WEBSITE_NEEDS = ["new", "redesign", "no", "unsure"] as const;
 export type OnboardingWebsiteNeed = (typeof ONBOARDING_WEBSITE_NEEDS)[number];
 
 // How access to an account is given: by inviting our access email, or by sharing the login
@@ -36,6 +42,52 @@ export type OnboardingAccessMethod = (typeof ONBOARDING_ACCESS_METHODS)[number];
 // Photos and videos: upload what they have, have us make them, or not needed.
 export const ONBOARDING_MEDIA_MODES = ["upload", "create", "none"] as const;
 export type OnboardingMediaMode = (typeof ONBOARDING_MEDIA_MODES)[number];
+
+// The steps a client goes through right after making their own account (client-portal:
+// component/clientstart) ask about the business itself and its goals, which the form above
+// doesn't. Their answers sit beside its sections, under `business`, `goals` and `kickoffCall`.
+
+// How the main contact would like to be reached.
+export const ONBOARDING_REACH_BY = ["email", "phone", "text"] as const;
+export type OnboardingReachBy = (typeof ONBOARDING_REACH_BY)[number];
+
+// How soon they would like to reach their goals.
+export const ONBOARDING_GOAL_TIMEFRAMES = ["3_months", "6_months", "12_months", "unsure"] as const;
+export type OnboardingGoalTimeframe = (typeof ONBOARDING_GOAL_TIMEFRAMES)[number];
+
+// What they plan to spend on marketing each month, ads and agency fees together (US dollars).
+export const ONBOARDING_BUDGETS = ["under_1000", "1000_3000", "3000_5000", "5000_10000", "over_10000", "unsure"] as const;
+export type OnboardingBudget = (typeof ONBOARDING_BUDGETS)[number];
+
+// Where their leads come from today.
+export const ONBOARDING_LEAD_SOURCES = ["referrals", "google_search", "google_maps", "paid_ads", "social_media", "other"] as const;
+export type OnboardingLeadSource = (typeof ONBOARDING_LEAD_SOURCES)[number];
+
+// The most items a typed list (services offered, areas served) may hold.
+export const ONBOARDING_MAX_LIST_ITEMS = 50;
+
+// The kinds of photos and videos, as they are named on the record (onboarding.media) — and
+// what a client may upload for each: the photos take images, the videos take videos.
+export const ONBOARDING_MEDIA_KINDS = ["professionalPhotos", "businessPhotos", "videos"] as const;
+export type OnboardingMediaKind = (typeof ONBOARDING_MEDIA_KINDS)[number];
+
+const ONBOARDING_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const ONBOARDING_PHOTO_MAX_SIZE = 10 * 1024 * 1024;
+
+export const ONBOARDING_MEDIA_MIME_TYPES: Record<OnboardingMediaKind, string[]> = {
+  professionalPhotos: ONBOARDING_PHOTO_TYPES,
+  businessPhotos: ONBOARDING_PHOTO_TYPES,
+  videos: ["video/mp4", "video/quicktime", "video/webm"],
+};
+export const ONBOARDING_MEDIA_MAX_FILE_SIZE: Record<OnboardingMediaKind, number> = {
+  professionalPhotos: ONBOARDING_PHOTO_MAX_SIZE,
+  businessPhotos: ONBOARDING_PHOTO_MAX_SIZE,
+  videos: 200 * 1024 * 1024,
+};
+// How many files a kind can hold, and how many one upload can bring (they are held in memory
+// until they go to Spaces).
+export const ONBOARDING_MEDIA_MAX_FILES = 40;
+export const ONBOARDING_UPLOAD_MAX_FILES = 10;
 
 export const ONBOARDING_TEXT_MAX_LENGTH = 300;
 export const ONBOARDING_LONG_TEXT_MAX_LENGTH = 2000;
@@ -67,6 +119,10 @@ export interface IOnboardingAccount {
   needsHelp?: boolean;
   // They don't have one: should we create it?
   wantsCreated?: boolean;
+  // The account's own login, when that is how we get in: the username or email it is signed
+  // in with, and its password. The password is sealed (utils/secretBox.ts) — never as typed.
+  loginUsername?: string;
+  loginPassword?: string;
 }
 
 // One kind of photos or videos.
@@ -79,9 +135,56 @@ export interface IOnboardingMedia {
   notes?: string;
 }
 
+// A number as it is in a typical month today, and as they would like it to be.
+export interface IOnboardingTarget {
+  current?: number;
+  goal?: number;
+}
+
 export interface IClientOnboarding {
   status: OnboardingStatus;
   submittedAt?: Date;
+
+  // About the business. Its name is the client's own `companyName`.
+  business?: {
+    // What they do, who their clients are, and what makes them different.
+    description?: string;
+    // The work they do for their own clients — not the BayShore services they buy, which are
+    // the client's `serviceTypes`.
+    services: string[];
+    // The cities, counties or regions their clients come from.
+    areas: string[];
+    // Who we should talk to about the account. With `isAccountOwner` it is the person who
+    // signed up — the client's own contactName, email and phone, repeated here as they
+    // confirmed them; without it, someone else, named here.
+    contact?: {
+      isAccountOwner?: boolean;
+      name?: string;
+      email?: string;
+      phone?: string;
+      reachBy?: OnboardingReachBy;
+    };
+  };
+
+  // Where the business is now and where it wants to be. Money is in US dollars.
+  goals?: {
+    // Each per month.
+    revenue?: IOnboardingTarget;
+    leads?: IOnboardingTarget;
+    newClients?: IOnboardingTarget;
+    timeframe?: OnboardingGoalTimeframe;
+    budget?: OnboardingBudget;
+    // What one lead costs them today, and what one new client is worth to them.
+    costPerLead?: number;
+    clientValue?: number;
+    leadSources: OnboardingLeadSource[];
+  };
+
+  // Whether they say they booked the kickoff call. It is booked on a Google Calendar
+  // appointment schedule, which doesn't tell us — so this is the client's own word.
+  kickoffCall?: {
+    booked?: boolean;
+  };
 
   website?: {
     url?: string;
@@ -149,6 +252,8 @@ export interface IClientOnboarding {
     linkedin?: IOnboardingAccount;
     tiktok?: IOnboardingAccount;
     x?: IOnboardingAccount;
+    // The ad account behind Facebook and Instagram ads. (Google Ads is `google.ads`.)
+    metaAds?: IOnboardingAccount;
   };
 
   media?: {
@@ -156,6 +261,79 @@ export interface IClientOnboarding {
     businessPhotos?: IOnboardingMedia;
     videos?: IOnboardingMedia;
   };
+}
+
+// ── What the team records ────────────────────────────────────────────────────
+
+// What the team fills in about a client when adding or editing them (company-portal:
+// component/clients/ClientForm) — beside the contact details, which sit on the client itself.
+// The choices (an industry, a billing cycle…) are the form's own lists, so they are kept as the
+// text that was picked; dates are kept as the form holds them, yyyy-mm-dd.
+
+export const CLIENT_CONTRACT_SIGNED = ["yes", "sent", "no"] as const;
+export type ClientContractSigned = (typeof CLIENT_CONTRACT_SIGNED)[number];
+
+// One service the client has agreed to, as it was set up for them.
+export interface IClientServicePlan {
+  name: string;
+  // The quantities and prices, each under its label on the form.
+  fields: { label: string; value: number }[];
+  // What they come to each month.
+  monthly: number;
+  // What the service covers for this client.
+  included: string[];
+  // Rates to quote if the client asks for more later. Not billed now.
+  addons: { label: string; price: number }[];
+}
+
+export interface IClientDetails {
+  communication?: {
+    methods: string[];
+    bestTime?: string;
+    timeZone?: string;
+  };
+  business?: {
+    industry?: string;
+    businessType?: string;
+    website?: string;
+    googleBusinessProfile?: string;
+    serviceArea?: string;
+    targetAudience?: string;
+    competitors?: string;
+    social?: { facebook?: string; instagram?: string; linkedin?: string; tiktok?: string; youtube?: string; x?: string };
+    hasLogo?: boolean;
+    // They have no logo: whether we design one, and on what terms.
+    logoDesign?: { add?: boolean; price?: number; concepts?: number; style?: string };
+    otherDetails?: string;
+  };
+  services: IClientServicePlan[];
+  // What the client already has and what they need, and — for what we are taking over — the
+  // steps of the transfer that are done.
+  transfer?: {
+    has: string[];
+    needs: string[];
+    websiteDone: string[];
+    socialDone: string[];
+  };
+  contract?: {
+    // In months. Missing for a custom length, where only the end date says.
+    termMonths?: number;
+    endDate?: string;
+    renewal?: string;
+    cancellationNotice?: string;
+    renewalReminder?: string;
+    signed?: ClientContractSigned;
+    dateSigned?: string;
+    dateSent?: string;
+  };
+  billing?: {
+    paymentOnFile?: boolean;
+    method?: string;
+    cycle?: string;
+    day?: string;
+    setupFee?: string;
+  };
+  reportDelivery?: string;
 }
 
 export interface IClient extends Document {
@@ -168,6 +346,14 @@ export interface IClient extends Document {
   startDate: Date;
   status: ClientStatus;
   notes?: string;
+  // What the team recorded about them. Missing for a client added before the form asked.
+  details?: IClientDetails;
+  // The portal pages this client is shown, chosen by the team. Missing means all of them —
+  // as it is for every client from before this could be chosen, and for one who signed up.
+  portalMenus?: ClientPortalMenu[];
+  // When they agreed to the Terms and Privacy Policy, making their own account. Missing for a
+  // client the team added.
+  termsAcceptedAt?: Date;
   // What the client answered on the onboarding form. Missing until they start it.
   onboarding?: IClientOnboarding;
   // The SHA-256 of the key handed to whoever started onboarding without an account — it lets
@@ -366,6 +552,21 @@ export interface IClient extends Document {
 const shortText = { type: String, trim: true, maxlength: [ONBOARDING_TEXT_MAX_LENGTH, `Cannot exceed ${ONBOARDING_TEXT_MAX_LENGTH} characters`] as [number, string] };
 const longText = { type: String, trim: true, maxlength: [ONBOARDING_LONG_TEXT_MAX_LENGTH, `Cannot exceed ${ONBOARDING_LONG_TEXT_MAX_LENGTH} characters`] as [number, string] };
 
+// A list typed one item at a time: the services a business offers, the areas it serves.
+const textList = {
+  type: [shortText],
+  default: [],
+  validate: {
+    validator: (list: unknown[]) => list.length <= ONBOARDING_MAX_LIST_ITEMS,
+    message: `Add at most ${ONBOARDING_MAX_LIST_ITEMS}`,
+  },
+};
+
+// A count or an amount of money: never below zero.
+const amount = { type: Number, min: [0, "Use 0 or more"] as [number, string] };
+
+const onboardingTargetSchema = new Schema<IOnboardingTarget>({ current: amount, goal: amount }, { _id: false });
+
 const onboardingFileSchema = new Schema<IOnboardingFile>(
   {
     url: { type: String, required: [true, "File URL is required"], trim: true },
@@ -391,6 +592,8 @@ const onboardingAccountSchema = new Schema<IOnboardingAccount>(
     accessGiven: { type: Boolean },
     needsHelp: { type: Boolean },
     wantsCreated: { type: Boolean },
+    loginUsername: shortText,
+    loginPassword: { type: String },
   },
   { _id: false }
 );
@@ -409,6 +612,49 @@ const onboardingSchema = new Schema<IClientOnboarding>(
   {
     status: { type: String, enum: ONBOARDING_STATUSES, default: "in_progress" },
     submittedAt: { type: Date },
+
+    business: {
+      type: new Schema(
+        {
+          description: longText,
+          services: textList,
+          areas: textList,
+          contact: {
+            type: new Schema(
+              {
+                isAccountOwner: { type: Boolean },
+                name: shortText,
+                email: { type: String, trim: true, lowercase: true, match: [EMAIL_REGEX, "Please enter a valid email address"] },
+                phone: { type: String, trim: true, match: [PHONE_REGEX, "Please enter a valid phone number"] },
+                reachBy: { type: String, enum: ONBOARDING_REACH_BY },
+              },
+              { _id: false }
+            ),
+          },
+        },
+        { _id: false }
+      ),
+    },
+
+    goals: {
+      type: new Schema(
+        {
+          revenue: { type: onboardingTargetSchema },
+          leads: { type: onboardingTargetSchema },
+          newClients: { type: onboardingTargetSchema },
+          timeframe: { type: String, enum: ONBOARDING_GOAL_TIMEFRAMES },
+          budget: { type: String, enum: ONBOARDING_BUDGETS },
+          costPerLead: amount,
+          clientValue: amount,
+          leadSources: { type: [{ type: String, enum: ONBOARDING_LEAD_SOURCES }], default: [] },
+        },
+        { _id: false }
+      ),
+    },
+
+    kickoffCall: {
+      type: new Schema({ booked: { type: Boolean } }, { _id: false }),
+    },
 
     website: {
       type: new Schema(
@@ -501,6 +747,7 @@ const onboardingSchema = new Schema<IClientOnboarding>(
           linkedin: { type: onboardingAccountSchema },
           tiktok: { type: onboardingAccountSchema },
           x: { type: onboardingAccountSchema },
+          metaAds: { type: onboardingAccountSchema },
         },
         { _id: false }
       ),
@@ -516,6 +763,76 @@ const onboardingSchema = new Schema<IClientOnboarding>(
         { _id: false }
       ),
     },
+  },
+  { _id: false }
+);
+
+const amountField = { type: Number, min: [0, "Use 0 or more"] as [number, string] };
+// A date as the form holds it.
+const dayField = { type: String, trim: true, match: [/^\d{4}-\d{2}-\d{2}$/, "Use a date like 2026-01-31"] as [RegExp, string] };
+const shortList = { type: [shortText], default: [] };
+
+const clientServicePlanSchema = new Schema<IClientServicePlan>(
+  {
+    name: { ...shortText, required: [true, "A service needs its name"] },
+    fields: { type: [new Schema({ label: shortText, value: amountField }, { _id: false })], default: [] },
+    monthly: { ...amountField, default: 0 },
+    included: shortList,
+    addons: { type: [new Schema({ label: shortText, price: amountField }, { _id: false })], default: [] },
+  },
+  { _id: false }
+);
+
+const clientDetailsSchema = new Schema<IClientDetails>(
+  {
+    communication: {
+      type: new Schema({ methods: shortList, bestTime: shortText, timeZone: shortText }, { _id: false }),
+    },
+    business: {
+      type: new Schema(
+        {
+          industry: shortText,
+          businessType: shortText,
+          website: shortText,
+          googleBusinessProfile: shortText,
+          serviceArea: shortText,
+          targetAudience: shortText,
+          competitors: longText,
+          social: {
+            type: new Schema({ facebook: shortText, instagram: shortText, linkedin: shortText, tiktok: shortText, youtube: shortText, x: shortText }, { _id: false }),
+          },
+          hasLogo: { type: Boolean },
+          logoDesign: {
+            type: new Schema({ add: { type: Boolean }, price: amountField, concepts: amountField, style: shortText }, { _id: false }),
+          },
+          otherDetails: longText,
+        },
+        { _id: false }
+      ),
+    },
+    services: { type: [clientServicePlanSchema], default: [] },
+    transfer: {
+      type: new Schema({ has: shortList, needs: shortList, websiteDone: shortList, socialDone: shortList }, { _id: false }),
+    },
+    contract: {
+      type: new Schema(
+        {
+          termMonths: amountField,
+          endDate: dayField,
+          renewal: shortText,
+          cancellationNotice: shortText,
+          renewalReminder: shortText,
+          signed: { type: String, enum: CLIENT_CONTRACT_SIGNED },
+          dateSigned: dayField,
+          dateSent: dayField,
+        },
+        { _id: false }
+      ),
+    },
+    billing: {
+      type: new Schema({ paymentOnFile: { type: Boolean }, method: shortText, cycle: shortText, day: shortText, setupFee: shortText }, { _id: false }),
+    },
+    reportDelivery: shortText,
   },
   { _id: false }
 );
@@ -554,9 +871,11 @@ const clientSchema = new Schema<IClient>(
       type: [{ type: String, trim: true }],
       validate: {
         // A client who came in through the onboarding form has none to begin with: the team
-        // picks them once they have taken the client on. So does any client still pending.
+        // picks them once they have taken the client on. So does any client still pending, and
+        // one who made their own account (auth.controller.ts → clientSignup) — nobody on the
+        // team created that record, so there is no `createdBy`.
         validator: function (this: IClient, value: string[]) {
-          return value.length > 0 || this?.status === "pending" || Boolean(this?.onboarding);
+          return value.length > 0 || this?.status === "pending" || Boolean(this?.onboarding) || !this?.createdBy;
         },
         message: "Select at least one service type",
       },
@@ -576,6 +895,10 @@ const clientSchema = new Schema<IClient>(
       default: "",
       maxlength: [CLIENT_NOTES_MAX_LENGTH, `Notes cannot exceed ${CLIENT_NOTES_MAX_LENGTH} characters`],
     },
+    details: { type: clientDetailsSchema },
+    // No default: an absent list is not an empty one (see IClient).
+    portalMenus: { type: [{ type: String, enum: CLIENT_PORTAL_MENUS }], default: undefined },
+    termsAcceptedAt: { type: Date },
     // Not set until the client starts the onboarding form.
     onboarding: { type: onboardingSchema },
     onboardingKeyHash: { type: String, select: false },

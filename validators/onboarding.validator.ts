@@ -1,5 +1,5 @@
 import { body, header, param, query, type ValidationChain } from "express-validator";
-import { ONBOARDING_STATUSES } from "../models/client.model";
+import { ONBOARDING_MEDIA_KINDS, ONBOARDING_STATUSES } from "../models/client.model";
 import { PHONE_REGEX } from "../models/user.model";
 import { normalizePhone } from "../utils/phone";
 
@@ -48,6 +48,12 @@ export const updateOnboardingRules: ValidationChain[] = [
   phoneRule,
   ...answerRules,
 ];
+
+// Which kind of photos or videos an upload is for, and — to take one back — which file.
+export const onboardingMediaKindRule: ValidationChain[] = [
+  param("kind").isIn([...ONBOARDING_MEDIA_KINDS]).withMessage(`kind must be one of: ${ONBOARDING_MEDIA_KINDS.join(", ")}`),
+];
+export const removeOnboardingMediaRules: ValidationChain[] = [body("url").isString().withMessage("url is required").trim().notEmpty().withMessage("url is required")];
 
 // The team's list of onboardings waiting to be taken on.
 export const listOnboardingRequestsRules: ValidationChain[] = [

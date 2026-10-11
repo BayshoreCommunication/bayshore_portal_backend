@@ -1,12 +1,17 @@
 import { Router } from "express";
 import {
   deleteOnboarding,
+  getMyOnboarding,
   getOnboarding,
   getOnboardingRequest,
   listOnboardingRequests,
+  removeMyOnboardingMedia,
   startOnboarding,
+  updateMyOnboarding,
   updateOnboarding,
+  uploadMyOnboardingMedia,
 } from "../controllers/onboarding.controller";
+import { onboardingMediaUpload } from "../middleware/upload";
 import { protect, authorize } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import type { UserRole } from "../models/user.model";
@@ -14,6 +19,8 @@ import {
   listOnboardingRequestsRules,
   onboardingIdRule,
   onboardingKeyRule,
+  onboardingMediaKindRule,
+  removeOnboardingMediaRules,
   startOnboardingRules,
   updateOnboardingRules,
 } from "../validators/onboarding.validator";
@@ -202,6 +209,67 @@ router.post("/", startOnboardingRules, validate, startOnboarding);
 // Before "/:id", which would otherwise take "requests" for an id.
 router.get("/requests", protect, authorize(...CAN_MANAGE), listOnboardingRequestsRules, validate, listOnboardingRequests);
 router.get("/requests/:id", protect, authorize(...CAN_MANAGE), onboardingIdRule, validate, getOnboardingRequest);
+
+/**
+ * @swagger
+ * /onboarding/me:
+ *   get:
+ *     summary: The signed-in client's own onboarding
+ *     description: For a client with an account. Who they are (name, company, email, phone) and their answers so far, to fill the form with. No key is needed — their login says whose record it is.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: The client's details and answers
+ *       404:
+ *         description: This account has no client record
+ *   patch:
+ *     summary: Save the signed-in client's own onboarding
+ *     description: Same body as PATCH /onboarding/{id}. Their name, company and phone are kept in step with their login.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Saved
+ *       409:
+ *         description: The phone number belongs to another account
+ *       422:
+ *         description: Validation failed
+ */
+// Also before "/:id", which would otherwise take "me" for an id.
+router.get("/me", protect, authorize("client"), getMyOnboarding);
+router.patch("/me", protect, authorize("client"), updateOnboardingRules, validate, updateMyOnboarding);
+
+/**
+ * @swagger
+ * /onboarding/me/media/{kind}:
+ *   post:
+ *     summary: Upload photos or videos for the signed-in client's onboarding
+ *     description: A multipart form with the files under `files` (up to 10 at a time). `kind` is professionalPhotos, businessPhotos (JPG, PNG, WEBP or GIF, up to 10MB each) or videos (MP4, MOV or WEBM, up to 200MB each). The files go to DigitalOcean Spaces and are listed on the client's record.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       201:
+ *         description: The files now stored for that kind
+ *       422:
+ *         description: A file of the wrong type or size, or too many files
+ *   delete:
+ *     summary: Remove one uploaded photo or video
+ *     description: Send the file's `url` in the body. It is taken off the record and out of Spaces.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: The files left for that kind
+ *       404:
+ *         description: No such file on this client's onboarding
+ */
+router.post("/me/media/:kind", protect, authorize("client"), onboardingMediaKindRule, validate, onboardingMediaUpload, uploadMyOnboardingMedia);
+router.delete("/me/media/:kind", protect, authorize("client"), onboardingMediaKindRule, removeOnboardingMediaRules, validate, removeMyOnboardingMedia);
 
 router.get("/:id", onboardingIdRule, onboardingKeyRule, validate, getOnboarding);
 router.patch("/:id", onboardingIdRule, onboardingKeyRule, updateOnboardingRules, validate, updateOnboarding);

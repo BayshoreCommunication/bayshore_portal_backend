@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { signin, clientSignin, refreshAccessToken, signout } from "../controllers/auth.controller";
+import { signin, clientSignin, clientSignup, refreshAccessToken, signout } from "../controllers/auth.controller";
 import { validate } from "../middleware/validate";
-import { signinRules, refreshTokenRules } from "../validators/auth.validator";
+import { signinRules, clientSignupRules, refreshTokenRules } from "../validators/auth.validator";
 
 const router = Router();
 
@@ -9,7 +9,7 @@ const router = Router();
  * @swagger
  * tags:
  *   name: Auth
- *   description: Sign in, token refresh & sign out. There is no public signup — users are created by an admin.
+ *   description: Sign in, token refresh & sign out. Staff are created by an admin; a client can also make their own account (/auth/client/signup).
  */
 
 /**
@@ -134,6 +134,52 @@ router.post("/signin", signinRules, validate, signin);
  *               $ref: '#/components/schemas/ApiErrorResponse'
  */
 router.post("/client/signin", signinRules, validate, clientSignin);
+
+/**
+ * @swagger
+ * /auth/client/signup:
+ *   post:
+ *     summary: Create a client account
+ *     description: Open to anyone. Creates an active client and its login (role "client") together. It does not sign them in — use /auth/client/signin afterwards.
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [fullName, email, phone, password]
+ *             properties:
+ *               fullName:
+ *                 type: string
+ *                 example: David Carter
+ *               email:
+ *                 type: string
+ *                 example: david@carterinjurylaw.com
+ *               phone:
+ *                 type: string
+ *                 example: "+18135550142"
+ *               password:
+ *                 type: string
+ *                 format: password
+ *                 description: At least 8 characters, including a number
+ *     responses:
+ *       201:
+ *         description: Account created
+ *       409:
+ *         description: The email or phone number already has an account
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiErrorResponse'
+ *       422:
+ *         description: Validation failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiErrorResponse'
+ */
+router.post("/client/signup", clientSignupRules, validate, clientSignup);
 
 /**
  * @swagger

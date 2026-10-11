@@ -1,6 +1,6 @@
 import mongoose, { type FilterQuery } from "mongoose";
 import type { Request, Response } from "express";
-import { Client, CLIENT_STATUSES, type IClient, type ClientStatus } from "../models/client.model";
+import { Client, CLIENT_PORTAL_MENUS, CLIENT_STATUSES, type IClient, type ClientStatus } from "../models/client.model";
 import { User, type IUser, type UserStatus } from "../models/user.model";
 import { RefreshToken } from "../models/refreshToken.model";
 import { asyncHandler } from "../middleware/asyncHandler";
@@ -60,8 +60,9 @@ const findVisibleClient = async (requester: IUser, id: string) => {
 };
 
 /**
- * Creates the client and, in the same call, its login account (role "client"),
- * filled in from the client's details and using the password that was sent.
+ * Creates the client — and, when a password is sent, its portal login (role "client") in the
+ * same call, filled in from the client's details. Without a password the client has no login:
+ * the team looks after everything for them.
  */
 export const createClient = asyncHandler(async (req: Request, res: Response) => {
   const requester = req.user!;
@@ -77,11 +78,15 @@ export const createClient = asyncHandler(async (req: Request, res: Response) => 
     accountManager,
     team,
     password,
+    portalMenus,
+    details,
   } = req.body;
   const email = String(req.body.email).toLowerCase();
+  const withLogin = Boolean(password);
 
   await assertEmailAvailable(email);
-  await assertPhoneAvailable(phone || undefined);
+  // A phone number only has to be free when it is going to be a login's.
+  if (withLogin) await assertPhoneAvailable(phone || undefined);
   await assertStaff([accountManager, ...(team ?? [])]);
 
   const clientId = new mongoose.Types.ObjectId();
@@ -99,37 +104,48 @@ export const createClient = asyncHandler(async (req: Request, res: Response) => 
     startDate,
     status: clientStatus,
     notes,
-    user: userId,
+    portalMenus,
+    details,
+    user: withLogin ? userId : undefined,
     accountManager: accountManager || undefined,
     team,
     createdBy: requester._id,
   });
-  const user = new User({
-    _id: userId,
-    fullName: contactName,
-    companyName,
-    email,
-    phone: phone || undefined,
-    address,
-    role: "client",
-    status: USER_STATUS_FOR[clientStatus],
-    client: clientId,
-    password,
-  });
+  const user = withLogin
+    ? new User({
+        _id: userId,
+        fullName: contactName,
+        companyName,
+        email,
+        phone: phone || undefined,
+        address,
+        role: "client",
+        status: USER_STATUS_FOR[clientStatus],
+        client: clientId,
+        password,
+      })
+    : null;
 
   // Validate both first so a bad request never leaves half a client behind.
   await client.validate();
-  await user.validate();
+  await user?.validate();
 
-  await user.save();
+  await user?.save();
   try {
     await client.save();
   } catch (error) {
-    await user.deleteOne();
+    await user?.deleteOne();
     throw error;
   }
 
   return ApiResponse(res, 201, "Client created successfully", { client, user });
+});
+
+// GET /clients/me/portal — the pages of the portal the signed-in client is shown. A client
+// the team hasn't chosen them for is shown every one.
+export const getMyPortal = asyncHandler(async (req: Request, res: Response) => {
+  const client = req.user?.client ? await Client.findById(req.user.client).select("portalMenus") : null;
+  return ApiResponse(res, 200, "Portal fetched successfully", { menus: client?.portalMenus ?? [...CLIENT_PORTAL_MENUS] });
 });
 
 export const listClients = asyncHandler(async (req: Request, res: Response) => {
@@ -155,8 +171,7 @@ export const listClients = asyncHandler(async (req: Request, res: Response) => {
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
-      // A list card has no use for the onboarding answers; they come with the single client.
-      .select("-onboarding")
+      // The onboarding answers come along: each card shows how far through it the client is.
       .populate("accountManager", "fullName email avatar")
       .lean(),
     Client.countDocuments(filter),
@@ -207,6 +222,8 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
     notes,
     accountManager,
     team,
+    portalMenus,
+    details,
   } = req.body;
   const email = req.body.email === undefined ? undefined : String(req.body.email).toLowerCase();
 
@@ -227,6 +244,9 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   if (startDate !== undefined) client.startDate = startDate;
   if (status !== undefined) client.status = status;
   if (notes !== undefined) client.notes = notes;
+  if (portalMenus !== undefined) client.portalMenus = portalMenus;
+  // The form sends everything it holds, so what is sent replaces what was there.
+  if (details !== undefined) client.set("details", details);
   if (accountManager !== undefined) client.accountManager = accountManager || undefined;
   if (team !== undefined) client.team = team;
 

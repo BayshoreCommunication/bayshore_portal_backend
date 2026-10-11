@@ -3,6 +3,7 @@ import type { RequestHandler } from "express";
 import { ApiError } from "../utils/ApiError";
 import { CONTENT_COMMENT_MAX_ATTACHMENTS, CONTENT_REQUEST_MAX_FILES, MEDIA_MAX_FILE_SIZE, MEDIA_MIME_TYPES } from "../models/content.model";
 import { PROJECT_FILE_MIME_TYPES, PROJECT_MAX_FILES, PROJECT_MAX_FILE_SIZE } from "../models/project.model";
+import { ONBOARDING_MEDIA_MAX_FILE_SIZE, ONBOARDING_MEDIA_MIME_TYPES, ONBOARDING_UPLOAD_MAX_FILES } from "../models/client.model";
 import { CONTENT_BATCH_MAX_PIECES } from "../validators/content.validator";
 
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
@@ -134,6 +135,34 @@ export const projectUpload: RequestHandler = (req, res, next) =>
     const messages: Partial<Record<multer.ErrorCode, string>> = {
       LIMIT_FILE_COUNT: `Too many files — a project can have at most ${PROJECT_MAX_FILES}`,
       LIMIT_FILE_SIZE: `A file is too large — up to ${PROJECT_MAX_FILE_SIZE / (1024 * 1024)}MB each`,
+      LIMIT_UNEXPECTED_FILE: `Unexpected file field "${err.field}" — send files as "files"`,
+    };
+    next(new ApiError(422, messages[err.code] ?? err.message));
+  });
+
+// Photos and videos a client uploads with their onboarding, under `files`. The size limit here
+// is the ceiling for the largest kind (video); the controller checks each file against what
+// the kind it was sent for accepts.
+const ONBOARDING_ALLOWED_MIME_TYPES = Array.from(new Set(Object.values(ONBOARDING_MEDIA_MIME_TYPES).flat()));
+
+const onboardingMediaFiles = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: Math.max(...Object.values(ONBOARDING_MEDIA_MAX_FILE_SIZE)), files: ONBOARDING_UPLOAD_MAX_FILES },
+  fileFilter: (req, file, cb) => {
+    if (!ONBOARDING_ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+      return cb(new ApiError(422, `Unsupported file type (${file.originalname}) — JPG, PNG, WEBP or GIF photos, or MP4, MOV or WEBM videos only`));
+    }
+    cb(null, true);
+  },
+}).fields([{ name: "files", maxCount: ONBOARDING_UPLOAD_MAX_FILES }]);
+
+// Multer's own errors, reworded for onboarding.
+export const onboardingMediaUpload: RequestHandler = (req, res, next) =>
+  onboardingMediaFiles(req, res, (err?: unknown) => {
+    if (!(err instanceof multer.MulterError)) return next(err);
+    const messages: Partial<Record<multer.ErrorCode, string>> = {
+      LIMIT_FILE_COUNT: `Too many files — at most ${ONBOARDING_UPLOAD_MAX_FILES} in one upload`,
+      LIMIT_FILE_SIZE: "A file is too large — photos up to 10MB each, videos up to 200MB each",
       LIMIT_UNEXPECTED_FILE: `Unexpected file field "${err.field}" — send files as "files"`,
     };
     next(new ApiError(422, messages[err.code] ?? err.message));

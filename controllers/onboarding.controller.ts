@@ -1,12 +1,25 @@
 import crypto from "crypto";
 import type { Request, Response } from "express";
 import type { FilterQuery } from "mongoose";
-import { Client, ONBOARDING_STATUSES, type IClient, type OnboardingStatus } from "../models/client.model";
+import {
+  Client,
+  ONBOARDING_MEDIA_KINDS,
+  ONBOARDING_MEDIA_MAX_FILES,
+  ONBOARDING_MEDIA_MAX_FILE_SIZE,
+  ONBOARDING_MEDIA_MIME_TYPES,
+  ONBOARDING_STATUSES,
+  type IClient,
+  type IOnboardingFile,
+  type OnboardingMediaKind,
+  type OnboardingStatus,
+} from "../models/client.model";
 import { User } from "../models/user.model";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
 import { ONBOARDING_KEY_HEADER, ONBOARDING_SECTIONS } from "../validators/onboarding.validator";
+import { seal } from "../utils/secretBox";
+import { deleteFromSpaces, uploadToSpaces } from "../utils/uploadToSpaces";
 
 // Onboarding, for someone who has no account yet. Nobody is signed in here, so these routes
 // are open — and what keeps one visitor's answers from another is a key:
@@ -41,6 +54,66 @@ const withoutFiles = (value: unknown): unknown => {
   );
 };
 
+// The sections made of accounts (Google, social media), where a login may be shared.
+const ACCOUNT_SECTIONS: readonly string[] = ["google", "social"];
+const PASSWORD_MAX_LENGTH = 200;
+
+// An account's password comes in as typed (`loginPassword`) and is sealed before it is stored.
+// It is never sent back (see viewOf), so the form can't send it again with its other answers:
+// an account that arrives without one keeps the one it had — for as long as its login is
+// still what is being shared. Any other way of giving access drops it.
+const withPasswords = (client: IClient, section: string, incoming: unknown): unknown => {
+  if (!isPlainObject(incoming)) return incoming;
+  return Object.fromEntries(
+    Object.entries(incoming).map(([name, account]) => {
+      if (!isPlainObject(account)) return [name, account];
+      const { loginPassword: typed, loginPasswordSet: _never, ...rest } = account;
+      if (rest.access !== "secure") return [name, rest];
+      if (typeof typed === "string" && typed !== "") {
+        if (typed.length > PASSWORD_MAX_LENGTH) throw new ApiError(422, `A password cannot exceed ${PASSWORD_MAX_LENGTH} characters`);
+        return [name, { ...rest, loginPassword: seal(typed) }];
+      }
+      const kept: unknown = client.get(`onboarding.${section}.${name}.loginPassword`);
+      return [name, typeof kept === "string" && kept ? { ...rest, loginPassword: kept } : rest];
+    })
+  );
+};
+
+// The answers as they go back to whoever gave them: a stored password is left out, with only
+// the fact that there is one (`loginPasswordSet`) in its place.
+const withoutPasswords = (client: IClient) => {
+  const onboarding = client.toObject().onboarding as (Plain & IClient["onboarding"]) | undefined;
+  if (!onboarding) return onboarding;
+  for (const section of ACCOUNT_SECTIONS) {
+    const accounts = onboarding[section];
+    if (!isPlainObject(accounts)) continue;
+    for (const account of Object.values(accounts)) {
+      if (!isPlainObject(account) || !account.loginPassword) continue;
+      delete account.loginPassword;
+      account.loginPasswordSet = true;
+    }
+  }
+  return onboarding;
+};
+
+// The files stored for one kind of photos or videos, as plain objects.
+const mediaFilesOf = (client: IClient, kind: OnboardingMediaKind): IOnboardingFile[] => client.toObject().onboarding?.media?.[kind]?.files ?? [];
+
+// Uploaded photos and videos come in through their own route (uploadMyOnboardingMedia), not
+// with the answers — the form doesn't send them, and `withoutFiles` drops any it is sent. So
+// when the media section is saved, each kind keeps the files it already has.
+const withStoredFiles = (client: IClient, incoming: unknown): unknown => {
+  const sent = isPlainObject(incoming) ? incoming : {};
+  return Object.fromEntries(
+    ONBOARDING_MEDIA_KINDS.flatMap((kind) => {
+      const files = mediaFilesOf(client, kind);
+      const answer = sent[kind];
+      if (!isPlainObject(answer)) return files.length ? [[kind, { files }]] : [];
+      return [[kind, { ...answer, files }]];
+    })
+  );
+};
+
 // Puts the sections that were sent (under `answers`) onto the record. A section replaces what
 // was there for it; one left out is untouched. Only the form's own sections are read — a
 // visitor can't reach the rest of the client record (its status, its team) through here.
@@ -48,7 +121,9 @@ const applyAnswers = (client: IClient, body: Plain) => {
   if (!client.onboarding) client.set("onboarding", {});
   const answers = isPlainObject(body.answers) ? body.answers : {};
   for (const section of ONBOARDING_SECTIONS) {
-    if (answers[section] !== undefined) client.set(`onboarding.${section}`, withoutFiles(answers[section]));
+    if (answers[section] === undefined) continue;
+    const sent = withoutFiles(answers[section]);
+    client.set(`onboarding.${section}`, ACCOUNT_SECTIONS.includes(section) ? withPasswords(client, section, sent) : section === "media" ? withStoredFiles(client, sent) : sent);
   }
   // `submit: true` hands it in; `submit: false` takes it back to keep working on it.
   if (body.submit === true) {
@@ -67,7 +142,7 @@ const viewOf = (client: IClient) => ({
   companyName: client.companyName,
   email: client.email,
   phone: client.phone,
-  onboarding: client.onboarding,
+  onboarding: withoutPasswords(client),
 });
 
 // The onboarding the request's key opens. One answer for "no such record", "not started
@@ -135,6 +210,121 @@ export const deleteOnboarding = asyncHandler(async (req: Request, res: Response)
   const client = await findOwn(req);
   await client.deleteOne();
   return ApiResponse(res, 200, "Onboarding deleted successfully");
+});
+
+// ── For a client who is signed in ────────────────────────────────────────────
+
+// A client with an account needs no key: their login says whose record it is. So they can open
+// the form already filled in with what we hold on them, and their answers are saved on that
+// same record — whatever its status, since it is their own.
+const findMine = async (req: Request) => {
+  const client = req.user?.client ? await Client.findById(req.user.client) : null;
+  if (!client) throw new ApiError(404, "There is no client record for this account");
+  return client;
+};
+
+// GET /onboarding/me — who they are and their answers so far, to fill the form with.
+export const getMyOnboarding = asyncHandler(async (req: Request, res: Response) => {
+  const client = await findMine(req);
+  return ApiResponse(res, 200, "Onboarding fetched successfully", viewOf(client));
+});
+
+// PATCH /onboarding/me — change answers (and the name, company or phone given with them).
+export const updateMyOnboarding = asyncHandler(async (req: Request, res: Response) => {
+  const client = await findMine(req);
+  const login = req.user!;
+
+  for (const field of ["contactName", "companyName"] as const) {
+    if (req.body[field] !== undefined) client[field] = req.body[field];
+  }
+  if (req.body.phone !== undefined) {
+    const phone: string | undefined = req.body.phone || undefined;
+    if (phone && phone !== login.phone && (await User.exists({ phone, _id: { $ne: login._id } }))) {
+      throw new ApiError(409, "This phone number is already used by another BayShore account");
+    }
+    client.phone = phone;
+  }
+  applyAnswers(client, req.body);
+
+  // The client's main login mirrors its contact details, as when the team edits them
+  // (client.controller.ts → updateClient). Another login of the same client is left as it is.
+  const isMainLogin = String(client.user) === String(login._id);
+  if (isMainLogin) {
+    login.fullName = client.contactName;
+    login.companyName = client.companyName;
+    login.phone = client.phone;
+  }
+
+  // Validate both first so a bad answer never leaves the two out of step.
+  await client.validate();
+  if (isMainLogin) await login.validate();
+
+  await client.save();
+  if (isMainLogin) await login.save();
+
+  return ApiResponse(res, 200, req.body.submit === true ? "Onboarding submitted" : "Onboarding saved", viewOf(client));
+});
+
+const uploadedFilesOf = (req: Request) => ((req.files ?? {}) as Record<string, Express.Multer.File[]>).files ?? [];
+
+// POST /onboarding/me/media/:kind — add photos or videos of one kind. They go to DigitalOcean
+// Spaces, and are listed on the client's record with the rest of their onboarding.
+export const uploadMyOnboardingMedia = asyncHandler(async (req: Request, res: Response) => {
+  const client = await findMine(req);
+  const kind = req.params.kind as OnboardingMediaKind;
+  const incoming = uploadedFilesOf(req);
+  if (!incoming.length) throw new ApiError(422, "Choose at least one file to upload");
+
+  // Each kind takes its own type of file, up to its own size.
+  const photos = kind !== "videos";
+  for (const file of incoming) {
+    if (!ONBOARDING_MEDIA_MIME_TYPES[kind].includes(file.mimetype)) {
+      throw new ApiError(422, `${file.originalname} can't go here — ${photos ? "JPG, PNG, WEBP or GIF photos" : "MP4, MOV or WEBM videos"} only`);
+    }
+    if (file.size > ONBOARDING_MEDIA_MAX_FILE_SIZE[kind]) {
+      throw new ApiError(422, `${file.originalname} is too large — up to ${ONBOARDING_MEDIA_MAX_FILE_SIZE[kind] / (1024 * 1024)}MB each`);
+    }
+  }
+  const stored = mediaFilesOf(client, kind);
+  if (stored.length + incoming.length > ONBOARDING_MEDIA_MAX_FILES) {
+    throw new ApiError(422, `That is too many — up to ${ONBOARDING_MEDIA_MAX_FILES} files here, and ${stored.length} are already uploaded`);
+  }
+
+  const added: IOnboardingFile[] = [];
+  try {
+    for (const file of incoming) {
+      const url = await uploadToSpaces(file, `onboarding/${client._id}`);
+      added.push({ url, name: file.originalname, size: file.size, mimeType: file.mimetype });
+    }
+    if (!client.onboarding) client.set("onboarding", {});
+    client.set(`onboarding.media.${kind}.files`, [...stored, ...added]);
+    // Uploading is choosing "share what I have".
+    client.set(`onboarding.media.${kind}.mode`, "upload");
+    await client.save();
+  } catch (error) {
+    // Nothing half-done: what reached Spaces but couldn't be recorded is taken out again.
+    await Promise.all(added.map((file) => deleteFromSpaces(file.url).catch(() => undefined)));
+    throw error;
+  }
+
+  return ApiResponse(res, 201, incoming.length === 1 ? "File uploaded" : "Files uploaded", { files: mediaFilesOf(client, kind) });
+});
+
+// DELETE /onboarding/me/media/:kind — take one uploaded file back. Its URL comes in the body.
+export const removeMyOnboardingMedia = asyncHandler(async (req: Request, res: Response) => {
+  const client = await findMine(req);
+  const kind = req.params.kind as OnboardingMediaKind;
+  const url = String(req.body.url);
+
+  const stored = mediaFilesOf(client, kind);
+  if (!stored.some((file) => file.url === url)) throw new ApiError(404, "File not found");
+
+  client.set(`onboarding.media.${kind}.files`, stored.filter((file) => file.url !== url));
+  await client.save();
+  // Off the record first: a file left behind in Spaces is tidier than a listed one that is gone.
+  await deleteFromSpaces(url).catch(() => undefined);
+
+  return ApiResponse(res, 200, "File removed", { files: mediaFilesOf(client, kind) });
 });
 
 // ── For the team ─────────────────────────────────────────────────────────────

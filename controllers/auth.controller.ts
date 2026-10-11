@@ -1,6 +1,8 @@
 import type { Request, Response } from "express";
+import mongoose from "mongoose";
 import ms from "ms";
 import { User, EMAIL_REGEX, STATUS_BLOCK_MESSAGES, type IUser } from "../models/user.model";
+import { Client } from "../models/client.model";
 import { RefreshToken } from "../models/refreshToken.model";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
@@ -107,6 +109,65 @@ export const clientSignin = asyncHandler(async (req: Request, res: Response) => 
   await logSignin(user, "client");
 
   return ApiResponse(res, 200, "Client signin successful", { user, ...tokens });
+});
+
+// A new client makes their own account (used by the client portal's front page). Open to
+// anyone — there is nobody signed in to ask. The client record and its login are created
+// together, as when the team adds a client (client.controller.ts → createClient), and both are
+// active, so the new client can sign in straight away. It does not sign them in.
+export const clientSignup = asyncHandler(async (req: Request, res: Response) => {
+  const { fullName, phone, password } = req.body;
+  const email = String(req.body.email).toLowerCase();
+
+  if ((await Client.exists({ email })) || (await User.exists({ email }))) {
+    throw new ApiError(409, "This email already has a BayShore account. Log in instead, or use a different email.");
+  }
+  if (await User.exists({ phone })) {
+    throw new ApiError(409, "This phone number already has a BayShore account. Log in instead, or use a different number.");
+  }
+
+  const clientId = new mongoose.Types.ObjectId();
+  const userId = new mongoose.Types.ObjectId();
+
+  const client = new Client({
+    _id: clientId,
+    contactName: fullName,
+    // The business isn't asked for when signing up: their own name stands in for it until
+    // they, or the team, fill it in.
+    companyName: fullName,
+    email,
+    phone,
+    // Chosen by the team when they take the client on.
+    serviceTypes: [],
+    startDate: new Date(),
+    status: "active",
+    user: userId,
+  });
+  const user = new User({
+    _id: userId,
+    fullName,
+    companyName: fullName,
+    email,
+    phone,
+    role: "client",
+    status: "active",
+    client: clientId,
+    password,
+  });
+
+  // Validate both first so a bad request never leaves half a client behind.
+  await client.validate();
+  await user.validate();
+
+  await user.save();
+  try {
+    await client.save();
+  } catch (error) {
+    await user.deleteOne();
+    throw error;
+  }
+
+  return ApiResponse(res, 201, "Account created successfully", { user });
 });
 
 export const refreshAccessToken = asyncHandler(async (req: Request, res: Response) => {
