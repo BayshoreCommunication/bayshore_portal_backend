@@ -11,6 +11,7 @@ import {
   type IClient,
   type IOnboardingFile,
   type OnboardingMediaKind,
+  type OnboardingUploadKind,
   type OnboardingStatus,
 } from "../models/client.model";
 import { User } from "../models/user.model";
@@ -97,7 +98,20 @@ const withoutPasswords = (client: IClient) => {
 };
 
 // The files stored for one kind of photos or videos, as plain objects.
-const mediaFilesOf = (client: IClient, kind: OnboardingMediaKind): IOnboardingFile[] => client.toObject().onboarding?.media?.[kind]?.files ?? [];
+// Where one kind of upload is kept on the record: the logo with the logo's answers, the rest with the media.
+const filesPathOf = (kind: OnboardingUploadKind) => (kind === "logo" ? "onboarding.logo.files" : `onboarding.media.${kind}.files`);
+const mediaFilesOf = (client: IClient, kind: OnboardingUploadKind): IOnboardingFile[] => {
+  const onboarding = client.toObject().onboarding;
+  return (kind === "logo" ? onboarding?.logo?.files : onboarding?.media?.[kind]?.files) ?? [];
+};
+
+// Meta Ads is asked about when a client signs up, but isn't on the onboarding form. So when
+// the form saves the social accounts — the whole section, as it does — that answer stays.
+const withKeptAccounts = (client: IClient, section: string, incoming: unknown): unknown => {
+  if (section !== "social" || !isPlainObject(incoming) || "metaAds" in incoming) return incoming;
+  const kept = client.toObject().onboarding?.social?.metaAds;
+  return kept ? { ...incoming, metaAds: kept } : incoming;
+};
 
 // Uploaded photos and videos come in through their own route (uploadMyOnboardingMedia), not
 // with the answers — the form doesn't send them, and `withoutFiles` drops any it is sent. So
@@ -119,16 +133,31 @@ const withStoredFiles = (client: IClient, incoming: unknown): unknown => {
 // visitor can't reach the rest of the client record (its status, its team) through here.
 const applyAnswers = (client: IClient, body: Plain) => {
   if (!client.onboarding) client.set("onboarding", {});
+  // The client is on the form now, whatever of it the team had recorded before.
+  if (!client.get("onboarding.status")) client.set("onboarding.status", "in_progress");
   const answers = isPlainObject(body.answers) ? body.answers : {};
   for (const section of ONBOARDING_SECTIONS) {
     if (answers[section] === undefined) continue;
     const sent = withoutFiles(answers[section]);
-    client.set(`onboarding.${section}`, ACCOUNT_SECTIONS.includes(section) ? withPasswords(client, section, sent) : section === "media" ? withStoredFiles(client, sent) : sent);
+    client.set(
+      `onboarding.${section}`,
+      ACCOUNT_SECTIONS.includes(section)
+        ? withKeptAccounts(client, section, withPasswords(client, section, sent))
+        : section === "media"
+          ? withStoredFiles(client, sent)
+          : // The logo's files are uploaded on their own too: saving its answers keeps them.
+            section === "logo" && isPlainObject(sent)
+            ? { ...sent, files: mediaFilesOf(client, "logo") }
+            : sent
+    );
   }
   // `submit: true` hands it in; `submit: false` takes it back to keep working on it.
   if (body.submit === true) {
     client.set("onboarding.status", "submitted");
     client.set("onboarding.submittedAt", new Date());
+    // Handing the form in — every question answered — is the end of onboarding: a client who
+    // was in it is active from here on. (Their logins are active already.)
+    if (client.status === "onboarding") client.status = "active";
   } else if (body.submit === false) {
     client.set("onboarding.status", "in_progress");
     client.set("onboarding.submittedAt", undefined);
@@ -267,19 +296,26 @@ export const updateMyOnboarding = asyncHandler(async (req: Request, res: Respons
 
 const uploadedFilesOf = (req: Request) => ((req.files ?? {}) as Record<string, Express.Multer.File[]>).files ?? [];
 
-// POST /onboarding/me/media/:kind — add photos or videos of one kind. They go to DigitalOcean
+// What each kind of upload takes, said to the client when a file isn't one of them.
+const UPLOAD_FORMATS: Record<OnboardingUploadKind, string> = {
+  professionalPhotos: "JPG, PNG, WEBP or GIF photos",
+  businessPhotos: "JPG, PNG, WEBP or GIF photos",
+  videos: "MP4, MOV or WEBM videos",
+  logo: "PNG, JPG, WEBP, GIF or SVG images",
+};
+
+// POST /onboarding/me/media/:kind — add photos or videos of one kind, or logo files. They go to DigitalOcean
 // Spaces, and are listed on the client's record with the rest of their onboarding.
 export const uploadMyOnboardingMedia = asyncHandler(async (req: Request, res: Response) => {
   const client = await findMine(req);
-  const kind = req.params.kind as OnboardingMediaKind;
+  const kind = req.params.kind as OnboardingUploadKind;
   const incoming = uploadedFilesOf(req);
   if (!incoming.length) throw new ApiError(422, "Choose at least one file to upload");
 
   // Each kind takes its own type of file, up to its own size.
-  const photos = kind !== "videos";
   for (const file of incoming) {
     if (!ONBOARDING_MEDIA_MIME_TYPES[kind].includes(file.mimetype)) {
-      throw new ApiError(422, `${file.originalname} can't go here — ${photos ? "JPG, PNG, WEBP or GIF photos" : "MP4, MOV or WEBM videos"} only`);
+      throw new ApiError(422, `${file.originalname} can't go here — ${UPLOAD_FORMATS[kind]} only`);
     }
     if (file.size > ONBOARDING_MEDIA_MAX_FILE_SIZE[kind]) {
       throw new ApiError(422, `${file.originalname} is too large — up to ${ONBOARDING_MEDIA_MAX_FILE_SIZE[kind] / (1024 * 1024)}MB each`);
@@ -297,9 +333,11 @@ export const uploadMyOnboardingMedia = asyncHandler(async (req: Request, res: Re
       added.push({ url, name: file.originalname, size: file.size, mimeType: file.mimetype });
     }
     if (!client.onboarding) client.set("onboarding", {});
-    client.set(`onboarding.media.${kind}.files`, [...stored, ...added]);
-    // Uploading is choosing "share what I have".
-    client.set(`onboarding.media.${kind}.mode`, "upload");
+    if (!client.get("onboarding.status")) client.set("onboarding.status", "in_progress");
+    client.set(filesPathOf(kind), [...stored, ...added]);
+    // Uploading is choosing "share what I have" — or, for a logo, saying there is one.
+    if (kind === "logo") client.set("onboarding.logo.has", "yes");
+    else client.set(`onboarding.media.${kind}.mode`, "upload");
     await client.save();
   } catch (error) {
     // Nothing half-done: what reached Spaces but couldn't be recorded is taken out again.
@@ -313,13 +351,13 @@ export const uploadMyOnboardingMedia = asyncHandler(async (req: Request, res: Re
 // DELETE /onboarding/me/media/:kind — take one uploaded file back. Its URL comes in the body.
 export const removeMyOnboardingMedia = asyncHandler(async (req: Request, res: Response) => {
   const client = await findMine(req);
-  const kind = req.params.kind as OnboardingMediaKind;
+  const kind = req.params.kind as OnboardingUploadKind;
   const url = String(req.body.url);
 
   const stored = mediaFilesOf(client, kind);
   if (!stored.some((file) => file.url === url)) throw new ApiError(404, "File not found");
 
-  client.set(`onboarding.media.${kind}.files`, stored.filter((file) => file.url !== url));
+  client.set(filesPathOf(kind), stored.filter((file) => file.url !== url));
   await client.save();
   // Off the record first: a file left behind in Spaces is tidier than a listed one that is gone.
   await deleteFromSpaces(url).catch(() => undefined);

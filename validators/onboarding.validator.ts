@@ -1,10 +1,12 @@
 import { body, header, param, query, type ValidationChain } from "express-validator";
-import { ONBOARDING_MEDIA_KINDS, ONBOARDING_STATUSES } from "../models/client.model";
+import { ONBOARDING_STATUSES, ONBOARDING_UPLOAD_KINDS } from "../models/client.model";
 import { PHONE_REGEX } from "../models/user.model";
 import { normalizePhone } from "../utils/phone";
 
-// The parts of the onboarding form, as they are named on the client record (client.onboarding).
-export const ONBOARDING_SECTIONS = ["website", "domain", "hosting", "cms", "email", "logo", "google", "social", "media"] as const;
+// The parts of a client's onboarding answers, as they are named on the client record
+// (client.onboarding). The first three are asked in the steps a client goes through right after
+// signing up (client-portal: ClientSignup); the rest are the onboarding form's own.
+export const ONBOARDING_SECTIONS = ["business", "goals", "kickoffCall", "website", "domain", "hosting", "cms", "email", "logo", "google", "social", "media"] as const;
 
 // The header that carries the key handed out when onboarding is started.
 export const ONBOARDING_KEY_HEADER = "x-onboarding-key";
@@ -49,9 +51,9 @@ export const updateOnboardingRules: ValidationChain[] = [
   ...answerRules,
 ];
 
-// Which kind of photos or videos an upload is for, and — to take one back — which file.
+// Which kind of photos or videos an upload is for — or the logo — and, to take one back, which file.
 export const onboardingMediaKindRule: ValidationChain[] = [
-  param("kind").isIn([...ONBOARDING_MEDIA_KINDS]).withMessage(`kind must be one of: ${ONBOARDING_MEDIA_KINDS.join(", ")}`),
+  param("kind").isIn([...ONBOARDING_UPLOAD_KINDS]).withMessage(`kind must be one of: ${ONBOARDING_UPLOAD_KINDS.join(", ")}`),
 ];
 export const removeOnboardingMediaRules: ValidationChain[] = [body("url").isString().withMessage("url is required").trim().notEmpty().withMessage("url is required")];
 

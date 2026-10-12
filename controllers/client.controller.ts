@@ -1,6 +1,6 @@
 import mongoose, { type FilterQuery } from "mongoose";
 import type { Request, Response } from "express";
-import { Client, CLIENT_PORTAL_MENUS, CLIENT_STATUSES, type IClient, type ClientStatus } from "../models/client.model";
+import { Client, CLIENT_PORTAL_MENUS, CLIENT_STATUSES, portalMenusOf, ONBOARDING_MAX_COMPETITORS, ONBOARDING_TEXT_MAX_LENGTH, type IClient, type ClientStatus } from "../models/client.model";
 import { User, type IUser, type UserStatus } from "../models/user.model";
 import { RefreshToken } from "../models/refreshToken.model";
 import { asyncHandler } from "../middleware/asyncHandler";
@@ -11,6 +11,8 @@ import { clientScopeFor as scopeFor } from "../utils/clientAccess";
 
 // A client's business status decides whether its logins may sign in.
 const USER_STATUS_FOR: Record<ClientStatus, UserStatus> = {
+  // They sign in to fill in the onboarding form.
+  onboarding: "active",
   pending: "pending",
   active: "active",
   on_hold: "inactive",
@@ -20,6 +22,45 @@ const USER_STATUS_FOR: Record<ClientStatus, UserStatus> = {
 // Trimmed, blanks dropped, duplicates removed (order kept).
 const cleanServiceTypes = (values: string[]) =>
   Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+
+// The answers the onboarding form asks the client for too — their website, their profiles,
+// their logo — when it is the team recording them on the add/edit form (sent as `shared`).
+// Each is kept once, where the client's own answers go, so there is one answer whoever gave
+// it last. A blank clears what was there, but doesn't start an onboarding record to do it.
+const SHARED_SOCIALS = ["facebook", "instagram", "linkedin", "tiktok", "youtube", "x"] as const;
+
+const applyShared = (client: IClient, shared: unknown) => {
+  if (typeof shared !== "object" || shared === null || Array.isArray(shared)) return;
+  const sent = shared as Record<string, unknown>;
+  const put = (path: string, value: unknown) => {
+    const next = typeof value === "string" ? value.trim() || undefined : value;
+    if (next === undefined && client.get(`onboarding.${path}`) === undefined) return;
+    client.set(`onboarding.${path}`, next);
+  };
+
+  if (typeof sent.website === "string") {
+    put("website.url", sent.website);
+    // A website given is a website had.
+    if (sent.website.trim()) put("website.hasNone", undefined);
+  }
+  if (typeof sent.googleBusinessProfile === "string") put("google.businessProfile.link", sent.googleBusinessProfile);
+  if (typeof sent.social === "object" && sent.social !== null) {
+    const social = sent.social as Record<string, unknown>;
+    for (const key of SHARED_SOCIALS) {
+      if (typeof social[key] === "string") put(`social.${key}.link`, social[key]);
+    }
+  }
+  if (typeof sent.hasLogo === "boolean") put("logo.has", sent.hasLogo ? "yes" : "no");
+  if (typeof sent.logoStyle === "string") put("logo.style", sent.logoStyle);
+  // The form lists competitor websites separated by commas. What the client said they like
+  // about one stays with it.
+  if (typeof sent.competitors === "string") {
+    const kept: { url?: string; note?: string }[] = client.toObject().onboarding?.website?.competitors ?? [];
+    const urls = Array.from(new Set(sent.competitors.split(",").map((url) => url.trim().slice(0, ONBOARDING_TEXT_MAX_LENGTH)).filter(Boolean)));
+    const rows = urls.slice(0, ONBOARDING_MAX_COMPETITORS).map((url) => ({ url, note: kept.find((row) => row.url === url)?.note }));
+    if (rows.length || kept.length) client.set("onboarding.website.competitors", rows);
+  }
+};
 
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -111,6 +152,7 @@ export const createClient = asyncHandler(async (req: Request, res: Response) => 
     team,
     createdBy: requester._id,
   });
+  applyShared(client, req.body.shared);
   const user = withLogin
     ? new User({
         _id: userId,
@@ -144,8 +186,8 @@ export const createClient = asyncHandler(async (req: Request, res: Response) => 
 // GET /clients/me/portal — the pages of the portal the signed-in client is shown. A client
 // the team hasn't chosen them for is shown every one.
 export const getMyPortal = asyncHandler(async (req: Request, res: Response) => {
-  const client = req.user?.client ? await Client.findById(req.user.client).select("portalMenus") : null;
-  return ApiResponse(res, 200, "Portal fetched successfully", { menus: client?.portalMenus ?? [...CLIENT_PORTAL_MENUS] });
+  const client = req.user?.client ? await Client.findById(req.user.client).select("portalMenus createdBy") : null;
+  return ApiResponse(res, 200, "Portal fetched successfully", { menus: client ? portalMenusOf(client) : [...CLIENT_PORTAL_MENUS] });
 });
 
 export const listClients = asyncHandler(async (req: Request, res: Response) => {
@@ -247,6 +289,7 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   if (portalMenus !== undefined) client.portalMenus = portalMenus;
   // The form sends everything it holds, so what is sent replaces what was there.
   if (details !== undefined) client.set("details", details);
+  applyShared(client, req.body.shared);
   if (accountManager !== undefined) client.accountManager = accountManager || undefined;
   if (team !== undefined) client.team = team;
 

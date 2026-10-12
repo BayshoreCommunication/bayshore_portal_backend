@@ -2,7 +2,7 @@ import type { Request, Response } from "express";
 import mongoose from "mongoose";
 import ms from "ms";
 import { User, EMAIL_REGEX, STATUS_BLOCK_MESSAGES, type IUser } from "../models/user.model";
-import { Client } from "../models/client.model";
+import { Client, CLIENT_FIRST_PORTAL_MENUS } from "../models/client.model";
 import { RefreshToken } from "../models/refreshToken.model";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
@@ -140,7 +140,12 @@ export const clientSignup = asyncHandler(async (req: Request, res: Response) => 
     // Chosen by the team when they take the client on.
     serviceTypes: [],
     startDate: new Date(),
-    status: "active",
+    // New, and filling in the onboarding form: the team's Clients page lists them under Onboarding.
+    status: "onboarding",
+    // Onboarding and services only, until the team turns the rest on.
+    portalMenus: [...CLIENT_FIRST_PORTAL_MENUS],
+    // The sign-up form doesn't let them through without agreeing to the Terms and Privacy Policy.
+    ...(req.body.termsAccepted === true ? { termsAcceptedAt: new Date() } : {}),
     user: userId,
   });
   const user = new User({

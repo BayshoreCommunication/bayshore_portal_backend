@@ -2,7 +2,9 @@ import mongoose, { Schema, Document } from "mongoose";
 import { auditPlugin } from "../plugins/auditPlugin";
 import { EMAIL_REGEX, PHONE_REGEX } from "./user.model";
 
-export const CLIENT_STATUSES = ["pending", "active", "on_hold", "closed"] as const;
+// "onboarding" is where a client who made their own account starts: they can sign in, and are
+// filling in the onboarding form. The team moves them on from there once they take them on.
+export const CLIENT_STATUSES = ["onboarding", "pending", "active", "on_hold", "closed"] as const;
 
 export type ClientStatus = (typeof CLIENT_STATUSES)[number];
 
@@ -13,6 +15,11 @@ export const CLIENT_NOTES_MAX_LENGTH = 500;
 // account.
 export const CLIENT_PORTAL_MENUS = ["dashboard", "onboarding", "reports", "content", "leads", "projects", "services", "calendar", "messages", "payments", "notifications"] as const;
 export type ClientPortalMenu = (typeof CLIENT_PORTAL_MENUS)[number];
+
+// What a client who made their own account is shown at first: the onboarding form and the
+// services — and Settings, which is always there. The rest is turned on by the team, on the
+// client's edit form, once they have taken the client on.
+export const CLIENT_FIRST_PORTAL_MENUS: ClientPortalMenu[] = ["onboarding", "services"];
 
 // ── Onboarding ───────────────────────────────────────────────────────────────
 
@@ -74,14 +81,21 @@ export type OnboardingMediaKind = (typeof ONBOARDING_MEDIA_KINDS)[number];
 const ONBOARDING_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const ONBOARDING_PHOTO_MAX_SIZE = 10 * 1024 * 1024;
 
-export const ONBOARDING_MEDIA_MIME_TYPES: Record<OnboardingMediaKind, string[]> = {
+// Everything a client can upload with their onboarding: each kind of photos and videos, and
+// their logo — which is kept with the logo's own answers (onboarding.logo.files), not with the media.
+export const ONBOARDING_UPLOAD_KINDS = [...ONBOARDING_MEDIA_KINDS, "logo"] as const;
+export type OnboardingUploadKind = (typeof ONBOARDING_UPLOAD_KINDS)[number];
+
+export const ONBOARDING_MEDIA_MIME_TYPES: Record<OnboardingUploadKind, string[]> = {
   professionalPhotos: ONBOARDING_PHOTO_TYPES,
   businessPhotos: ONBOARDING_PHOTO_TYPES,
   videos: ["video/mp4", "video/quicktime", "video/webm"],
+  logo: [...ONBOARDING_PHOTO_TYPES, "image/svg+xml"],
 };
-export const ONBOARDING_MEDIA_MAX_FILE_SIZE: Record<OnboardingMediaKind, number> = {
+export const ONBOARDING_MEDIA_MAX_FILE_SIZE: Record<OnboardingUploadKind, number> = {
   professionalPhotos: ONBOARDING_PHOTO_MAX_SIZE,
   businessPhotos: ONBOARDING_PHOTO_MAX_SIZE,
+  logo: ONBOARDING_PHOTO_MAX_SIZE,
   videos: 200 * 1024 * 1024,
 };
 // How many files a kind can hold, and how many one upload can bring (they are held in memory
@@ -93,7 +107,7 @@ export const ONBOARDING_TEXT_MAX_LENGTH = 300;
 export const ONBOARDING_LONG_TEXT_MAX_LENGTH = 2000;
 export const ONBOARDING_MAX_COMPETITORS = 5;
 
-// A file uploaded with the form (a logo, photos, videos), stored in DigitalOcean Spaces.
+// A file uploaded with a form (a logo, photos, videos, a signed contract), stored in DigitalOcean Spaces.
 export interface IOnboardingFile {
   url: string;
   name: string;
@@ -142,7 +156,10 @@ export interface IOnboardingTarget {
 }
 
 export interface IClientOnboarding {
-  status: OnboardingStatus;
+  // Missing until the client themselves starts the form: the team can record a few of its
+  // answers before that (the ones their own add/edit form asks too — see IClientDetails),
+  // and that alone doesn't make an onboarding of it.
+  status?: OnboardingStatus;
   submittedAt?: Date;
 
   // About the business. Its name is the client's own `companyName`.
@@ -266,7 +283,7 @@ export interface IClientOnboarding {
 // ── What the team records ────────────────────────────────────────────────────
 
 // What the team fills in about a client when adding or editing them (company-portal:
-// component/clients/ClientForm) — beside the contact details, which sit on the client itself.
+// component/clients/ClientAdd) — beside the contact details, which sit on the client itself.
 // The choices (an industry, a billing cycle…) are the form's own lists, so they are kept as the
 // text that was picked; dates are kept as the form holds them, yyyy-mm-dd.
 
@@ -295,16 +312,27 @@ export interface IClientDetails {
   business?: {
     industry?: string;
     businessType?: string;
-    website?: string;
-    googleBusinessProfile?: string;
     serviceArea?: string;
     targetAudience?: string;
+    // They have a logo: the logo and brand files the team was given, once uploaded.
+    logoFiles: IOnboardingFile[];
+    // They have no logo (onboarding.logo.has): whether we design one, and on what terms.
+    logoDesign?: { add?: boolean; price?: number; concepts?: number; style?: string };
+    otherDetails?: string;
+
+    // No longer written. The onboarding form asks the client these too, so each is kept once,
+    // with the onboarding answers — whoever gives it (client.controller.ts → applyShared):
+    //   website → onboarding.website.url             competitors → onboarding.website.competitors
+    //   googleBusinessProfile → onboarding.google.businessProfile.link
+    //   social.x → onboarding.social.x.link          hasLogo → onboarding.logo.has
+    //   logoDesign.style → onboarding.logo.style
+    // What is still here is from a client last saved before that. It is read where the
+    // onboarding has no answer, and goes when the client is next saved from the form.
+    website?: string;
+    googleBusinessProfile?: string;
     competitors?: string;
     social?: { facebook?: string; instagram?: string; linkedin?: string; tiktok?: string; youtube?: string; x?: string };
     hasLogo?: boolean;
-    // They have no logo: whether we design one, and on what terms.
-    logoDesign?: { add?: boolean; price?: number; concepts?: number; style?: string };
-    otherDetails?: string;
   };
   services: IClientServicePlan[];
   // What the client already has and what they need, and — for what we are taking over — the
@@ -325,6 +353,8 @@ export interface IClientDetails {
     signed?: ClientContractSigned;
     dateSigned?: string;
     dateSent?: string;
+    // The signed contract itself (a PDF), once uploaded.
+    file?: IOnboardingFile;
   };
   billing?: {
     paymentOnFile?: boolean;
@@ -348,8 +378,9 @@ export interface IClient extends Document {
   notes?: string;
   // What the team recorded about them. Missing for a client added before the form asked.
   details?: IClientDetails;
-  // The portal pages this client is shown, chosen by the team. Missing means all of them —
-  // as it is for every client from before this could be chosen, and for one who signed up.
+  // The portal pages this client is shown, chosen by the team. Missing means all of them for a
+  // client the team added (every one from before this could be chosen), and only the first
+  // pages (CLIENT_FIRST_PORTAL_MENUS) for one who signed up themselves — see `portalMenusOf`.
   portalMenus?: ClientPortalMenu[];
   // When they agreed to the Terms and Privacy Policy, making their own account. Missing for a
   // client the team added.
@@ -610,7 +641,8 @@ const onboardingMediaSchema = new Schema<IOnboardingMedia>(
 
 const onboardingSchema = new Schema<IClientOnboarding>(
   {
-    status: { type: String, enum: ONBOARDING_STATUSES, default: "in_progress" },
+    // No default: it is set when the client starts the form (onboarding.controller.ts).
+    status: { type: String, enum: ONBOARDING_STATUSES },
     submittedAt: { type: Date },
 
     business: {
@@ -802,6 +834,7 @@ const clientDetailsSchema = new Schema<IClientDetails>(
             type: new Schema({ facebook: shortText, instagram: shortText, linkedin: shortText, tiktok: shortText, youtube: shortText, x: shortText }, { _id: false }),
           },
           hasLogo: { type: Boolean },
+          logoFiles: { type: [onboardingFileSchema], default: [] },
           logoDesign: {
             type: new Schema({ add: { type: Boolean }, price: amountField, concepts: amountField, style: shortText }, { _id: false }),
           },
@@ -825,6 +858,7 @@ const clientDetailsSchema = new Schema<IClientDetails>(
           signed: { type: String, enum: CLIENT_CONTRACT_SIGNED },
           dateSigned: dayField,
           dateSent: dayField,
+          file: { type: onboardingFileSchema },
         },
         { _id: false }
       ),
@@ -875,7 +909,7 @@ const clientSchema = new Schema<IClient>(
         // one who made their own account (auth.controller.ts → clientSignup) — nobody on the
         // team created that record, so there is no `createdBy`.
         validator: function (this: IClient, value: string[]) {
-          return value.length > 0 || this?.status === "pending" || Boolean(this?.onboarding) || !this?.createdBy;
+          return value.length > 0 || this?.status === "pending" || Boolean(this?.onboarding?.status) || !this?.createdBy;
         },
         message: "Select at least one service type",
       },
@@ -924,3 +958,9 @@ clientSchema.plugin(auditPlugin, {
 });
 
 export const Client = mongoose.model<IClient>("Client", clientSchema);
+
+// The portal pages a client is shown: the team's choice, or — where none was made — every
+// page for a client the team added, and only the first ones for one who signed up themselves
+// (nobody on the team created that record, so it has no `createdBy`).
+export const portalMenusOf = (client: Pick<IClient, "portalMenus" | "createdBy">): ClientPortalMenu[] =>
+  client.portalMenus ?? (client.createdBy ? [...CLIENT_PORTAL_MENUS] : [...CLIENT_FIRST_PORTAL_MENUS]);

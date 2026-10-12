@@ -37,6 +37,7 @@ const optionalFields: ValidationChain[] = [
     .withMessage("accountManager must be a valid user id"),
   // What is inside is checked by the client model itself (its lengths, numbers and dates).
   body("details").optional().isObject().withMessage("details must be an object"),
+  body("shared").optional().isObject().withMessage("shared must be an object"),
   body("portalMenus").optional().isArray().withMessage("portalMenus must be a list of portal pages"),
   body("portalMenus.*")
     .isIn([...CLIENT_PORTAL_MENUS])

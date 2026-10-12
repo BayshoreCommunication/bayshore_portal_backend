@@ -41,6 +41,7 @@ export const clientSignupRules: ValidationChain[] = [
     .withMessage("Password must be at least 8 characters")
     .matches(/\d/)
     .withMessage("Password must include a number"),
+  body("termsAccepted").optional().isBoolean().withMessage("termsAccepted must be true or false").toBoolean(),
 ];
 
 export const refreshTokenRules: ValidationChain[] = [
