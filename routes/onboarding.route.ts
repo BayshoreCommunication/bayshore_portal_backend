@@ -247,7 +247,7 @@ router.patch("/me", protect, authorize("client"), updateOnboardingRules, validat
  * /onboarding/me/media/{kind}:
  *   post:
  *     summary: Upload photos or videos for the signed-in client's onboarding
- *     description: A multipart form with the files under `files` (up to 10 at a time). `kind` is professionalPhotos, businessPhotos (JPG, PNG, WEBP or GIF, up to 10MB each) or videos (MP4, MOV or WEBM, up to 200MB each). The files go to DigitalOcean Spaces and are listed on the client's record.
+ *     description: A multipart form with the files under `files` (up to 10 at a time). `kind` is professionalPhotos, businessPhotos (JPG, PNG, WEBP or GIF, up to 10MB each) or videos (MP4, MOV or WEBM, up to 200MB each) — or logo, or logoStyle for what shows the style of a logo to be designed (PNG, JPG, WEBP, GIF or SVG, up to 10MB each). The files go to DigitalOcean Spaces and are listed on the client's record.
  *     tags: [Onboarding]
  *     security:
  *       - bearerAuth: []

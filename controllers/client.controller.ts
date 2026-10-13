@@ -62,6 +62,22 @@ const applyShared = (client: IClient, shared: unknown) => {
   }
 };
 
+// The team's ticks over the client's onboarding form (sent as `onboardingControls`): what of it
+// this client doesn't need — which their form then leaves out — and what the account manager has
+// approved. Each list replaces the one before it. What isn't needed is kept even when it is
+// empty — that is the team saying the client needs every step, where saying nothing leaves the
+// portals' own starting list. Nothing approved doesn't start an onboarding record to say so.
+const applyControls = (client: IClient, controls: unknown) => {
+  if (typeof controls !== "object" || controls === null || Array.isArray(controls)) return;
+  const sent = controls as Record<string, unknown>;
+  for (const list of ["notNeeded", "approved"] as const) {
+    if (!Array.isArray(sent[list])) continue;
+    const ids = Array.from(new Set((sent[list] as unknown[]).filter((id): id is string => typeof id === "string").map((id) => id.trim()).filter(Boolean)));
+    if (list === "approved" && !ids.length && !client.get("onboarding.approved")?.length) continue;
+    client.set(`onboarding.${list}`, ids);
+  }
+};
+
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const assertEmailAvailable = async (
@@ -153,6 +169,7 @@ export const createClient = asyncHandler(async (req: Request, res: Response) => 
     createdBy: requester._id,
   });
   applyShared(client, req.body.shared);
+  applyControls(client, req.body.onboardingControls);
   const user = withLogin
     ? new User({
         _id: userId,
@@ -290,6 +307,7 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   // The form sends everything it holds, so what is sent replaces what was there.
   if (details !== undefined) client.set("details", details);
   applyShared(client, req.body.shared);
+  applyControls(client, req.body.onboardingControls);
   if (accountManager !== undefined) client.accountManager = accountManager || undefined;
   if (team !== undefined) client.team = team;
 

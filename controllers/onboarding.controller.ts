@@ -50,7 +50,7 @@ const withoutFiles = (value: unknown): unknown => {
   if (!isPlainObject(value)) return value;
   return Object.fromEntries(
     Object.entries(value)
-      .filter(([key]) => key !== "files")
+      .filter(([key]) => key !== "files" && key !== "styleFiles")
       .map(([key, inner]) => [key, withoutFiles(inner)])
   );
 };
@@ -98,11 +98,13 @@ const withoutPasswords = (client: IClient) => {
 };
 
 // The files stored for one kind of photos or videos, as plain objects.
-// Where one kind of upload is kept on the record: the logo with the logo's answers, the rest with the media.
-const filesPathOf = (kind: OnboardingUploadKind) => (kind === "logo" ? "onboarding.logo.files" : `onboarding.media.${kind}.files`);
+// Where one kind of upload is kept on the record: the logo — and what shows the style of one
+// to be designed — with the logo's answers, the rest with the media.
+const filesPathOf = (kind: OnboardingUploadKind) =>
+  kind === "logo" ? "onboarding.logo.files" : kind === "logoStyle" ? "onboarding.logo.styleFiles" : `onboarding.media.${kind}.files`;
 const mediaFilesOf = (client: IClient, kind: OnboardingUploadKind): IOnboardingFile[] => {
   const onboarding = client.toObject().onboarding;
-  return (kind === "logo" ? onboarding?.logo?.files : onboarding?.media?.[kind]?.files) ?? [];
+  return (kind === "logo" ? onboarding?.logo?.files : kind === "logoStyle" ? onboarding?.logo?.styleFiles : onboarding?.media?.[kind]?.files) ?? [];
 };
 
 // Meta Ads is asked about when a client signs up, but isn't on the onboarding form. So when
@@ -147,7 +149,7 @@ const applyAnswers = (client: IClient, body: Plain) => {
           ? withStoredFiles(client, sent)
           : // The logo's files are uploaded on their own too: saving its answers keeps them.
             section === "logo" && isPlainObject(sent)
-            ? { ...sent, files: mediaFilesOf(client, "logo") }
+            ? { ...sent, files: mediaFilesOf(client, "logo"), styleFiles: mediaFilesOf(client, "logoStyle") }
             : sent
     );
   }
@@ -302,6 +304,7 @@ const UPLOAD_FORMATS: Record<OnboardingUploadKind, string> = {
   businessPhotos: "JPG, PNG, WEBP or GIF photos",
   videos: "MP4, MOV or WEBM videos",
   logo: "PNG, JPG, WEBP, GIF or SVG images",
+  logoStyle: "PNG, JPG, WEBP, GIF or SVG images",
 };
 
 // POST /onboarding/me/media/:kind — add photos or videos of one kind, or logo files. They go to DigitalOcean
@@ -335,9 +338,10 @@ export const uploadMyOnboardingMedia = asyncHandler(async (req: Request, res: Re
     if (!client.onboarding) client.set("onboarding", {});
     if (!client.get("onboarding.status")) client.set("onboarding.status", "in_progress");
     client.set(filesPathOf(kind), [...stored, ...added]);
-    // Uploading is choosing "share what I have" — or, for a logo, saying there is one.
+    // Uploading is choosing "share what I have" — or, for a logo, saying there is one. What
+    // shows the style of a logo to be designed answers nothing by itself.
     if (kind === "logo") client.set("onboarding.logo.has", "yes");
-    else client.set(`onboarding.media.${kind}.mode`, "upload");
+    else if (kind !== "logoStyle") client.set(`onboarding.media.${kind}.mode`, "upload");
     await client.save();
   } catch (error) {
     // Nothing half-done: what reached Spaces but couldn't be recorded is taken out again.

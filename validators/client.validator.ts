@@ -1,5 +1,5 @@
 import { body, param, query, type ValidationChain } from "express-validator";
-import { CLIENT_NOTES_MAX_LENGTH, CLIENT_PORTAL_MENUS, CLIENT_STATUSES } from "../models/client.model";
+import { CLIENT_NOTES_MAX_LENGTH, CLIENT_PORTAL_MENUS, CLIENT_STATUSES, ONBOARDING_CONTROL_ID_MAX_LENGTH, ONBOARDING_CONTROL_MAX_IDS } from "../models/client.model";
 import { PHONE_REGEX } from "../models/user.model";
 import { normalizePhone } from "../utils/phone";
 
@@ -38,6 +38,19 @@ const optionalFields: ValidationChain[] = [
   // What is inside is checked by the client model itself (its lengths, numbers and dates).
   body("details").optional().isObject().withMessage("details must be an object"),
   body("shared").optional().isObject().withMessage("shared must be an object"),
+  // The team's ticks over the client's onboarding form: what they need of it, and what is approved.
+  body("onboardingControls").optional().isObject().withMessage("onboardingControls must be an object"),
+  ...(["notNeeded", "approved"] as const).flatMap((list) => [
+    body(`onboardingControls.${list}`)
+      .optional()
+      .isArray({ max: ONBOARDING_CONTROL_MAX_IDS })
+      .withMessage(`onboardingControls.${list} must be a list of at most ${ONBOARDING_CONTROL_MAX_IDS} steps or items`),
+    body(`onboardingControls.${list}.*`)
+      .isString()
+      .isLength({ min: 1, max: ONBOARDING_CONTROL_ID_MAX_LENGTH })
+      .matches(/^[A-Za-z:.]+$/)
+      .withMessage(`onboardingControls.${list} can only hold the names of steps or items`),
+  ]),
   body("portalMenus").optional().isArray().withMessage("portalMenus must be a list of portal pages"),
   body("portalMenus.*")
     .isIn([...CLIENT_PORTAL_MENUS])

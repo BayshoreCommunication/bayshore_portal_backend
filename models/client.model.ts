@@ -83,7 +83,9 @@ const ONBOARDING_PHOTO_MAX_SIZE = 10 * 1024 * 1024;
 
 // Everything a client can upload with their onboarding: each kind of photos and videos, and
 // their logo — which is kept with the logo's own answers (onboarding.logo.files), not with the media.
-export const ONBOARDING_UPLOAD_KINDS = [...ONBOARDING_MEDIA_KINDS, "logo"] as const;
+// `logoStyle` is what they attach to the style they'd like, when the logo is ours to design
+// (onboarding.logo.styleFiles).
+export const ONBOARDING_UPLOAD_KINDS = [...ONBOARDING_MEDIA_KINDS, "logo", "logoStyle"] as const;
 export type OnboardingUploadKind = (typeof ONBOARDING_UPLOAD_KINDS)[number];
 
 export const ONBOARDING_MEDIA_MIME_TYPES: Record<OnboardingUploadKind, string[]> = {
@@ -91,17 +93,24 @@ export const ONBOARDING_MEDIA_MIME_TYPES: Record<OnboardingUploadKind, string[]>
   businessPhotos: ONBOARDING_PHOTO_TYPES,
   videos: ["video/mp4", "video/quicktime", "video/webm"],
   logo: [...ONBOARDING_PHOTO_TYPES, "image/svg+xml"],
+  logoStyle: [...ONBOARDING_PHOTO_TYPES, "image/svg+xml"],
 };
 export const ONBOARDING_MEDIA_MAX_FILE_SIZE: Record<OnboardingUploadKind, number> = {
   professionalPhotos: ONBOARDING_PHOTO_MAX_SIZE,
   businessPhotos: ONBOARDING_PHOTO_MAX_SIZE,
   logo: ONBOARDING_PHOTO_MAX_SIZE,
+  logoStyle: ONBOARDING_PHOTO_MAX_SIZE,
   videos: 200 * 1024 * 1024,
 };
 // How many files a kind can hold, and how many one upload can bring (they are held in memory
 // until they go to Spaces).
 export const ONBOARDING_MEDIA_MAX_FILES = 40;
 export const ONBOARDING_UPLOAD_MAX_FILES = 10;
+
+// The team's ticks over a client's form: how long one step's or item's name can be, and how
+// many of them a list can hold.
+export const ONBOARDING_CONTROL_ID_MAX_LENGTH = 60;
+export const ONBOARDING_CONTROL_MAX_IDS = 100;
 
 export const ONBOARDING_TEXT_MAX_LENGTH = 300;
 export const ONBOARDING_LONG_TEXT_MAX_LENGTH = 2000;
@@ -133,6 +142,8 @@ export interface IOnboardingAccount {
   needsHelp?: boolean;
   // They don't have one: should we create it?
   wantsCreated?: boolean;
+  // Instagram: it is already connected to their Facebook Page.
+  connected?: boolean;
   // The account's own login, when that is how we get in: the username or email it is signed
   // in with, and its password. The password is sealed (utils/secretBox.ts) — never as typed.
   loginUsername?: string;
@@ -161,6 +172,16 @@ export interface IClientOnboarding {
   // and that alone doesn't make an onboarding of it.
   status?: OnboardingStatus;
   submittedAt?: Date;
+
+  // The team's own say over the form (client.controller.ts → applyControls) — never the
+  // client's. `notNeeded` is what this client isn't asked: steps ("step:google") and items
+  // ("social.facebook", "hosting"), named as the portals name them. `approved` is the items the
+  // account manager has checked and approved.
+  // Until the team has said, `notNeeded` is missing — and the portals fall back on their own
+  // starting list (the steps a client isn't asked until the team turns them on). An empty
+  // list is the team saying this client needs every step.
+  notNeeded?: string[];
+  approved: string[];
 
   // About the business. Its name is the client's own `companyName`.
   business?: {
@@ -252,6 +273,8 @@ export interface IClientOnboarding {
     // They don't have one: should we design it, and in what style?
     wantsCreated?: boolean;
     style?: string;
+    // What they attached to show that style: logos they like, colors, sketches.
+    styleFiles: IOnboardingFile[];
   };
 
   google?: {
@@ -269,6 +292,8 @@ export interface IClientOnboarding {
     linkedin?: IOnboardingAccount;
     tiktok?: IOnboardingAccount;
     x?: IOnboardingAccount;
+    // The email account's own login, asked for with the social accounts. (Their business email is `email`.)
+    email?: IOnboardingAccount;
     // The ad account behind Facebook and Instagram ads. (Google Ads is `google.ads`.)
     metaAds?: IOnboardingAccount;
   };
@@ -479,6 +504,7 @@ export interface IClient extends Document {
  *         accessGiven: { type: boolean }
  *         needsHelp: { type: boolean }
  *         wantsCreated: { type: boolean, description: "They don't have one: create it for them" }
+ *         connected: { type: boolean, description: "Instagram: already connected to their Facebook Page" }
  *     OnboardingMedia:
  *       type: object
  *       properties:
@@ -494,6 +520,8 @@ export interface IClient extends Document {
  *       properties:
  *         status: { type: string, enum: [in_progress, submitted] }
  *         submittedAt: { type: string, format: date-time }
+ *         notNeeded: { type: array, items: { type: string }, description: "Set by the team: the steps and items this client isn't asked. Missing until the team has said — the portals then leave out their own starting list of steps", example: ["step:google", "social.tiktok"] }
+ *         approved: { type: array, items: { type: string }, description: "Set by the team: the items the account manager has approved", example: ["website", "social.facebook"] }
  *         website:
  *           type: object
  *           properties:
@@ -554,6 +582,7 @@ export interface IClient extends Document {
  *             files: { type: array, items: { $ref: '#/components/schemas/OnboardingFile' } }
  *             wantsCreated: { type: boolean, description: Design one for them }
  *             style: { type: string, maxLength: 2000 }
+ *             styleFiles: { type: array, items: { $ref: '#/components/schemas/OnboardingFile' }, description: Attached to show the style they'd like }
  *         google:
  *           type: object
  *           properties:
@@ -571,6 +600,7 @@ export interface IClient extends Document {
  *             linkedin: { $ref: '#/components/schemas/OnboardingAccount' }
  *             tiktok: { $ref: '#/components/schemas/OnboardingAccount' }
  *             x: { $ref: '#/components/schemas/OnboardingAccount' }
+ *             email: { $ref: '#/components/schemas/OnboardingAccount' }
  *         media:
  *           type: object
  *           properties:
@@ -623,6 +653,7 @@ const onboardingAccountSchema = new Schema<IOnboardingAccount>(
     accessGiven: { type: Boolean },
     needsHelp: { type: Boolean },
     wantsCreated: { type: Boolean },
+    connected: { type: Boolean },
     loginUsername: shortText,
     loginPassword: { type: String },
   },
@@ -644,6 +675,10 @@ const onboardingSchema = new Schema<IClientOnboarding>(
     // No default: it is set when the client starts the form (onboarding.controller.ts).
     status: { type: String, enum: ONBOARDING_STATUSES },
     submittedAt: { type: Date },
+
+    // No default: missing means the team hasn't said yet, which an empty list wouldn't.
+    notNeeded: { type: [{ type: String, trim: true, maxlength: ONBOARDING_CONTROL_ID_MAX_LENGTH }], default: undefined },
+    approved: { type: [{ type: String, trim: true, maxlength: ONBOARDING_CONTROL_ID_MAX_LENGTH }], default: [] },
 
     business: {
       type: new Schema(
@@ -752,6 +787,7 @@ const onboardingSchema = new Schema<IClientOnboarding>(
           files: { type: [onboardingFileSchema], default: [] },
           wantsCreated: { type: Boolean },
           style: longText,
+          styleFiles: { type: [onboardingFileSchema], default: [] },
         },
         { _id: false }
       ),
@@ -779,6 +815,7 @@ const onboardingSchema = new Schema<IClientOnboarding>(
           linkedin: { type: onboardingAccountSchema },
           tiktok: { type: onboardingAccountSchema },
           x: { type: onboardingAccountSchema },
+          email: { type: onboardingAccountSchema },
           metaAds: { type: onboardingAccountSchema },
         },
         { _id: false }
