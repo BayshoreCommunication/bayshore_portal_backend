@@ -80,6 +80,13 @@ export const updateClientRules: ValidationChain[] = [
   body("email").optional().trim().isEmail().withMessage("Please enter a valid email address"),
   body("serviceTypes").optional().isArray({ min: 1 }).withMessage("Select at least one service type"),
   body("startDate").optional().isISO8601().withMessage("Start date must be a valid date"),
+  // Sending a password resets the existing portal login, or creates one for a client that
+  // was originally added without portal access.
+  body("password")
+    .optional({ checkFalsy: true })
+    .isString()
+    .isLength({ min: 8, max: 72 })
+    .withMessage("The portal password must be between 8 and 72 characters"),
   ...optionalFields,
 ];
 

@@ -268,7 +268,7 @@ export const getClient = asyncHandler(async (req: Request, res: Response) => {
 export const updateClient = asyncHandler(async (req: Request, res: Response) => {
   const requester = req.user!;
   const client = await findVisibleClient(requester, req.params.id);
-  const loginUser = client.user ? await User.findById(client.user) : null;
+  let loginUser = client.user ? await User.findById(client.user) : null;
 
   const {
     contactName,
@@ -283,6 +283,7 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
     team,
     portalMenus,
     details,
+    password,
   } = req.body;
   const email = req.body.email === undefined ? undefined : String(req.body.email).toLowerCase();
 
@@ -291,6 +292,11 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   }
   if (phone && phone !== client.phone) {
     await assertPhoneAvailable(phone, loginUser?._id);
+  }
+  // A password can also give portal access to a client that was originally created without it.
+  if (password && !loginUser) {
+    await assertEmailAvailable(email ?? client.email, { clientId: client._id });
+    await assertPhoneAvailable(phone ?? client.phone);
   }
   await assertStaff([accountManager, ...(team ?? [])]);
 
@@ -311,6 +317,21 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   if (accountManager !== undefined) client.accountManager = accountManager || undefined;
   if (team !== undefined) client.team = team;
 
+  if (password && !loginUser) {
+    loginUser = new User({
+      fullName: client.contactName,
+      companyName: client.companyName,
+      email: client.email,
+      phone: client.phone,
+      address: client.address,
+      role: "client",
+      status: USER_STATUS_FOR[client.status],
+      client: client._id,
+      password,
+    });
+    client.user = loginUser._id;
+  }
+
   // The login account mirrors the client's contact details.
   if (loginUser) {
     loginUser.fullName = client.contactName;
@@ -318,6 +339,7 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
     loginUser.email = client.email;
     loginUser.phone = client.phone;
     loginUser.address = client.address;
+    if (password) loginUser.password = password;
   }
 
   await client.validate();
@@ -325,6 +347,9 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
 
   await client.save();
   await loginUser?.save();
+
+  // A replaced password invalidates any sessions authenticated with the old one.
+  if (password && loginUser) await RefreshToken.deleteMany({ user: loginUser._id });
 
   // Closing or pausing a client shuts every one of its logins, not just the main one.
   if (status !== undefined) {
