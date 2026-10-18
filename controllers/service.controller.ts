@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import mongoose from "mongoose";
 import { Service, type IService } from "../models/service.model";
 import { ClientService } from "../models/clientService.model";
+import { Client } from "../models/client.model";
 import type { IUser } from "../models/user.model";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
@@ -234,11 +235,24 @@ export const setClientServices = asyncHandler(async (req: Request, res: Response
 // ── The client's own portal: what they take and what they pay ────────────────
 // Adding more is paid for first — see controllers/payment.controller.ts.
 
+// Beside the catalog services they take, the services their team set up for them on their
+// record (the company portal's client form → details.services): what each covers and costs a
+// month — without the add-on rates, which are the team's to quote. `unpriced` are services on
+// the record that were never priced there.
 export const listMyServices = asyncHandler(async (req: Request, res: Response) => {
   const clientId = req.user!.client;
   if (!clientId) throw new ApiError(403, "This account is not linked to a client");
 
-  return ApiResponse(res, 200, "Services fetched successfully", await clientServicesOf(clientId, true));
+  const [taken, client] = await Promise.all([clientServicesOf(clientId, true), Client.findById(clientId).select("details.services serviceTypes").lean()]);
+  const plans = (client?.details?.services ?? []).map(({ name, fields, monthly, included }) => ({ name, fields, monthly, included }));
+  const unpriced = (client?.serviceTypes ?? []).filter((name) => !plans.some((plan) => plan.name === name));
+
+  return ApiResponse(res, 200, "Services fetched successfully", {
+    ...taken,
+    plans,
+    unpriced,
+    planTotal: plans.reduce((sum, plan) => sum + plan.monthly, 0),
+  });
 });
 
 // The whole catalog, for a client to browse — without how many other clients take

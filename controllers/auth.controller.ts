@@ -8,12 +8,11 @@ import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
 import { generateToken } from "../utils/generateToken";
-import {
-  hashToken,
-  issueRefreshToken,
-  rotateRefreshToken,
-  revokeAllRefreshTokensForUser,
-} from "../utils/refreshToken";
+import { hashToken, issueRefreshToken, rotateRefreshToken, revokeRefreshTokenChain } from "../utils/refreshToken";
+
+// How long after a refresh token is rotated the same token may still be presented — by the
+// requests that were already on their way with it — without that counting as reuse.
+const REFRESH_REUSE_GRACE_MS = 2 * 60 * 1000;
 import { env } from "../config/env";
 import { logAudit } from "../utils/audit";
 
@@ -188,22 +187,29 @@ export const refreshAccessToken = asyncHandler(async (req: Request, res: Respons
     throw new ApiError(401, "Invalid refresh token");
   }
 
-  if (stored.revokedAt) {
-    // This token was already rotated away once — reusing it now is a sign it
-    // may have leaked, so kill every other live session for this user too.
-    await revokeAllRefreshTokensForUser(String(stored.user));
+  if (stored.expiresAt.getTime() < Date.now()) {
+    throw new ApiError(401, "Refresh token has expired. Please sign in again");
+  }
+
+  // Rotated away just now: several requests from the same browser (tabs, a page's prefetches,
+  // separate server instances) carried the same token at once, and another of them rotated it
+  // first. That is the portal working normally, not theft — so this one is answered too.
+  const rotatedJustNow =
+    Boolean(stored.revokedAt && stored.replacedByTokenHash) && Date.now() - stored.revokedAt!.getTime() < REFRESH_REUSE_GRACE_MS;
+
+  if (stored.revokedAt && !rotatedJustNow) {
+    // Used again well after it was rotated away (or after signing out): it may have leaked. End
+    // this sign-in's line of tokens. The user's other sign-ins are left alone — revoking every
+    // session made each stale tab sign the user out of everything, over and over.
+    await revokeRefreshTokenChain(presentedHash);
     await logAudit({
       action: "token_reuse_detected",
       resource: "User",
       resourceId: stored.user,
       actor: null,
-      summary: "A refresh token that was already used was presented again; all sessions were revoked",
+      summary: "A refresh token that was already used was presented again; that sign-in was ended",
     });
     throw new ApiError(401, "Refresh token has already been used. Please sign in again");
-  }
-
-  if (stored.expiresAt.getTime() < Date.now()) {
-    throw new ApiError(401, "Refresh token has expired. Please sign in again");
   }
 
   const user = await User.findById(stored.user);
@@ -213,10 +219,11 @@ export const refreshAccessToken = asyncHandler(async (req: Request, res: Respons
 
   const accessToken = generateToken({ id: String(user._id), role: user.role });
   const accessTokenExpiresAt = new Date(Date.now() + ms(env.jwtExpiresIn as ms.StringValue));
-  const { token: newRefreshToken, expiresAt: refreshTokenExpiresAt } = await rotateRefreshToken(
-    String(user._id),
-    presentedHash
-  );
+  // A token already rotated (within the grace above) gets a fresh one of its own; its first
+  // replacement stays valid for the request that rotated it.
+  const { token: newRefreshToken, expiresAt: refreshTokenExpiresAt } = rotatedJustNow
+    ? await issueRefreshToken(String(user._id))
+    : await rotateRefreshToken(String(user._id), presentedHash);
 
   return ApiResponse(res, 200, "Token refreshed", {
     user,

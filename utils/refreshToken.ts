@@ -37,8 +37,24 @@ export const rotateRefreshToken = async (userId: string, presentedTokenHash: str
 };
 
 /**
- * If a refresh token that was already rotated away gets presented again, that's
- * a signal it may have been stolen — kill every other live session for this user.
+ * Revokes every token rotated from this one, down the chain (replacedByTokenHash) — one
+ * sign-in's line of tokens, leaving the user's other sign-ins (other browsers, devices) alone.
+ */
+export const revokeRefreshTokenChain = async (tokenHash: string) => {
+  let next: string | undefined = tokenHash;
+  // A chain is one sign-in's rotations; the cap only guards against a malformed loop.
+  for (let hops = 0; next && hops < 10_000; hops += 1) {
+    const token: { replacedByTokenHash?: string } | null = await RefreshToken.findOneAndUpdate(
+      { tokenHash: next },
+      { $set: { revokedAt: new Date() } },
+      { projection: { replacedByTokenHash: 1 } }
+    ).lean();
+    next = token?.replacedByTokenHash;
+  }
+};
+
+/**
+ * Kills every live session for this user — for when an account's access must end everywhere.
  */
 export const revokeAllRefreshTokensForUser = async (userId: string) => {
   await RefreshToken.updateMany(
