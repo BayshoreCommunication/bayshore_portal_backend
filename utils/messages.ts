@@ -5,6 +5,7 @@ import { Message, type IMessage, type IMessageMeeting, type MessageKind, type Me
 import { Notification, NOTIFICATION_BODY_MAX_LENGTH, NOTIFICATION_TITLE_MAX_LENGTH } from "../models/notification.model";
 import { User, type IUser } from "../models/user.model";
 import { emitNewMessage, emitToUsers } from "../realtime/messagesRealtime";
+import { emailNewMessage } from "./activityEmails";
 
 // Putting a message into a client's conversation: saving it, sending it live to whoever has
 // the conversation open, and telling the other side through their notifications.
@@ -54,6 +55,10 @@ const notifyOtherSide = async (message: IMessage, actor: IUser) => {
     // which staff open by client.
     const link = message.content ? `/content/${message.content}` : message.side === "client" ? `/messages?client=${message.client}` : "/messages";
 
+    // Those with nothing unread from this conversation yet: they get an email too. A second
+    // message before the first is read only updates the notification.
+    const fresh: Id[] = [];
+    let firstTitle = "";
     await Promise.all(
       recipients.map(async (recipient) => {
         const unread = await Notification.findOne({ recipient, type: "message", client: message.client, readAt: null });
@@ -74,9 +79,14 @@ const notifyOtherSide = async (message: IMessage, actor: IUser) => {
           pieces: count,
         };
         if (unread) await Notification.updateOne({ _id: unread._id }, { $set: fields });
-        else await Notification.create({ recipient, type: "message", client: message.client, ...fields });
+        else {
+          await Notification.create({ recipient, type: "message", client: message.client, ...fields });
+          fresh.push(recipient);
+          firstTitle = fields.title;
+        }
       })
     );
+    if (fresh.length) await emailNewMessage(fresh, { side: message.side, from: message.side === "team" ? actor.fullName : company, title: firstTitle, body: clip(body, 280), link });
     // Their bell can update at once instead of at its next poll.
     emitToUsers(recipients.map(String), "notifications:new", { type: "message", client: String(message.client) });
   } catch (error) {

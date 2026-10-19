@@ -8,6 +8,7 @@ import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
 import { deleteFromSpaces } from "../utils/uploadToSpaces";
 import { clientScopeFor as scopeFor } from "../utils/clientAccess";
+import { emailClientAdded } from "../utils/activityEmails";
 
 // A client's business status decides whether its logins may sign in.
 const USER_STATUS_FOR: Record<ClientStatus, UserStatus> = {
@@ -196,6 +197,9 @@ export const createClient = asyncHandler(async (req: Request, res: Response) => 
     await user?.deleteOne();
     throw error;
   }
+
+  // A welcome to the client, and word to the staff put on it.
+  await emailClientAdded(client, requester, withLogin);
 
   return ApiResponse(res, 201, "Client created successfully", { client, user });
 });

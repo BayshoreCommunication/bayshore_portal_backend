@@ -9,7 +9,7 @@ import { Client } from "../models/client.model";
 import { User, type IUser } from "../models/user.model";
 import type { IContent } from "../models/content.model";
 import { env } from "../config/env";
-import { emailReady, notificationEmail, sendEmail } from "./email";
+import { activityEmail, emailReady, sendEmail, type EmailTone } from "./email";
 
 // Telling the other side that something happened on a piece of content. Called by the
 // content controller after the change itself is saved.
@@ -18,8 +18,9 @@ import { emailReady, notificationEmail, sendEmail } from "./email";
 // manager, its team, whoever added the client and whoever made the piece — hear about what
 // the client does. Nobody is told about their own action.
 //
-// What the client is told in the portal they are also told by email (`email` below), at the
-// address of each of their logins — when email is set up (see utils/email.ts).
+// Everything is also sent by email (`email` below), to whoever has an address: the client's
+// logins with a button into the client portal, the staff with one into the team's portal —
+// when email is set up (see utils/email.ts).
 //
 // A notification is a courtesy: none of these ever throws, so a failure here can't undo or
 // fail the action it reports. It is logged instead.
@@ -50,13 +51,48 @@ const staffOn = async (content: IContent, except?: Id) => {
   return { recipients, company: client?.companyName ?? "A client" };
 };
 
-// The same notification by email, to those of the recipients who have an address. The button
-// in it opens the piece in the client portal.
-const emailTo = async (recipients: Id[], { title, body, content }: { title: string; body?: string; content: IContent }) => {
+// How each kind of notification looks as an email: its label, colour and button.
+const EMAIL_LOOK: Record<NotificationType, { eyebrow: string; tone: EmailTone; button: string }> = {
+  content_sent: { eyebrow: "Needs your approval", tone: "action", button: "Review the content" },
+  content_resubmitted: { eyebrow: "Updated for you", tone: "action", button: "Review the changes" },
+  content_comment: { eyebrow: "New reply", tone: "info", button: "Read the reply" },
+  content_feedback: { eyebrow: "Client feedback", tone: "alert", button: "Open the piece" },
+  content_approved: { eyebrow: "Approved", tone: "success", button: "Open the piece" },
+  content_caption_edited: { eyebrow: "Caption edited", tone: "info", button: "See what changed" },
+  message: { eyebrow: "New message", tone: "info", button: "Read the message" },
+};
+
+// The same notification by email, to those of the recipients who have an address. Clients get
+// a button into the client portal; the team, into theirs.
+const emailTo = async (
+  recipients: Id[],
+  { type, title, body, content, audience }: { type: NotificationType; title: string; body?: string; content: IContent; audience: "client" | "team" }
+) => {
   if (!emailReady) return;
   const people = await User.find({ _id: { $in: recipients }, email: { $nin: [null, ""] } }).select("fullName email").lean();
-  const url = `${env.clientPortalUrl}${linkTo(content)}`;
-  await Promise.all(people.map((person) => sendEmail({ to: person.email as string, ...notificationEmail({ name: person.fullName, title, body, url }) })));
+  const look = EMAIL_LOOK[type];
+  const url = `${audience === "client" ? env.clientPortalUrl : env.companyPortalUrl}${linkTo(content)}`;
+  const company = audience === "team" ? (await Client.findById(content.client).select("companyName").lean())?.companyName : undefined;
+  await Promise.all(
+    people.map((person) =>
+      sendEmail({
+        to: person.email as string,
+        ...activityEmail({
+          name: person.fullName,
+          title,
+          body,
+          eyebrow: look.eyebrow,
+          tone: look.tone,
+          details: [
+            ["Content", content.title],
+            ["Client", company],
+          ],
+          button: { label: look.button, url },
+          audience,
+        }),
+      })
+    )
+  );
 };
 
 const deliver = async (
@@ -68,8 +104,8 @@ const deliver = async (
     content: IContent;
     actor: IUser;
     pieces?: number;
-    // Also send it by email — for what the client is told.
-    email?: boolean;
+    // Also send it by email, as to a client or to the team.
+    email?: "client" | "team";
   }
 ) => {
   if (!recipients.length) return;
@@ -89,7 +125,7 @@ const deliver = async (
       pieces: notification.pieces ?? 1,
     }))
   );
-  if (notification.email) await emailTo(recipients, { title, body, content: notification.content });
+  if (notification.email) await emailTo(recipients, { type: notification.type, title, body, content: notification.content, audience: notification.email });
 };
 
 // Runs the work and swallows (logs) whatever goes wrong.
@@ -146,7 +182,7 @@ export const notifyContentSent = quietly(async (pieces: IContent[], actor: IUser
       content: first,
       actor,
       pieces: pieces.length,
-      email: true,
+      email: "client",
     });
   }
 });
@@ -159,7 +195,7 @@ export const notifyContentResubmitted = quietly(async (content: IContent, actor:
     body: content.title,
     content,
     actor,
-    email: true,
+    email: "client",
   });
 });
 
@@ -172,7 +208,7 @@ export const notifyTeamReply = quietly(async (content: IContent, actor: IUser, t
     body: `${actor.fullName}: ${excerptOf(text, attachments)}`,
     content,
     actor,
-    email: true,
+    email: "client",
   });
 });
 
@@ -189,6 +225,7 @@ export const notifyClientFeedback = quietly(
       body: `${content.title} — ${excerptOf(text, attachments)}`,
       content,
       actor,
+      email: "team",
     });
   }
 );
@@ -202,6 +239,7 @@ export const notifyClientApproved = quietly(async (content: IContent, actor: IUs
     body: comment ? `${content.title} — ${excerptOf(comment, 0)}` : content.title,
     content,
     actor,
+    email: "team",
   });
 });
 
@@ -214,6 +252,7 @@ export const notifyClientEditedCaption = quietly(async (content: IContent, actor
     body: content.title,
     content,
     actor,
+    email: "team",
   });
 });
 

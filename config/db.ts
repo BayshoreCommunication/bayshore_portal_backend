@@ -12,6 +12,8 @@ export const connectDB = async (): Promise<string> => {
 
   if (!connectionPromise) {
     connectionPromise = mongoose.connect(env.mongoUri, {
+      // Always the portal's own database, whether or not the address names it.
+      dbName: env.mongoDbName,
       serverSelectionTimeoutMS: 10000,
     });
   }

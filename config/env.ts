@@ -13,8 +13,13 @@ const publicUrl = deploymentHost
     : `https://${deploymentHost.replace(/\/$/, "")}`
   : `http://localhost:${port}`;
 
+// The database address may be given as MONGO_URI or MONGO_URL.
+const mongoUri = process.env.MONGO_URI || process.env.MONGO_URL;
+if (!mongoUri) {
+  throw new Error("Missing required environment variable: MONGO_URI (or MONGO_URL)");
+}
+
 const requiredVars = [
-  "MONGO_URI",
   "JWT_SECRET",
   "DO_SPACES_KEY",
   "DO_SPACES_SECRET",
@@ -33,7 +38,10 @@ for (const key of requiredVars) {
 export const env = {
   port,
   nodeEnv: process.env.NODE_ENV || "development",
-  mongoUri: process.env.MONGO_URI as string,
+  mongoUri,
+  // The database on that server the data is in. Set here rather than left to the address, which
+  // may not name one — and then MongoDB quietly uses an empty "test" database instead.
+  mongoDbName: process.env.MONGO_DB_NAME || "bayshore_portal_db",
   clientUrl: process.env.CLIENT_URL || "http://localhost:3000",
   clientUrls: (process.env.CLIENT_URL || "http://localhost:3000")
     .split(",")
@@ -47,6 +55,8 @@ export const env = {
   refreshTokenExpiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || "30d",
   // Where the client portal lives — Stripe sends a client back here after paying.
   clientPortalUrl: (process.env.CLIENT_PORTAL_URL || "http://localhost:3001").replace(/\/+$/, ""),
+  // Where the team's portal lives — the buttons in emails to the team lead here.
+  companyPortalUrl: (process.env.COMPANY_PORTAL_URL || "http://localhost:3000").replace(/\/+$/, ""),
   // Optional at boot: without them the API runs, and checkout answers 503.
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || "",

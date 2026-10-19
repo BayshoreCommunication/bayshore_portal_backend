@@ -14,6 +14,7 @@ import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
 import { canAccessClient, clientScopeFor, visibleClientFilter } from "../utils/clientAccess";
+import { emailProjectCreated } from "../utils/activityEmails";
 import { uploadToSpaces, deleteFromSpaces } from "../utils/uploadToSpaces";
 
 // What a client must never see: who on staff opened or handled the project.
@@ -142,6 +143,7 @@ export const createProject = asyncHandler(async (req: Request, res: Response) =>
   const project = new Project({ client: clientId, requestedBy: "team" });
   applyFields(project, req.body, true);
   await saveWithFiles(project, req);
+  await emailProjectCreated(project, requester);
 
   return ApiResponse(res, 201, "Project created successfully", project);
 });
@@ -267,6 +269,7 @@ export const createMyProject = asyncHandler(async (req: Request, res: Response) 
   const project = new Project({ client: clientId, requestedBy: "client" });
   applyFields(project, req.body, false);
   await saveWithFiles(project, req);
+  await emailProjectCreated(project, req.user!);
 
   return ApiResponse(res, 201, "Project created successfully", await forClient(project));
 });
