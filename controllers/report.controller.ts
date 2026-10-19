@@ -15,6 +15,7 @@ import { ApiError } from "../utils/ApiError";
 import { canAccessClient, clientScopeFor, visibleClientFilter } from "../utils/clientAccess";
 import { REPORT_REVIEW_ROLES } from "../utils/reportAccess";
 import { emailReportStatus } from "../utils/activityEmails";
+import { notifyReportPublished } from "../utils/notifications";
 
 const isReviewer = (user: IUser) => REPORT_REVIEW_ROLES.includes(user.role);
 
@@ -244,6 +245,8 @@ export const changeReportStatus = asyncHandler(async (req: Request, res: Respons
   await report.save();
   // Handed in: the reviewers hear. Published: the client hears it's ready.
   await emailReportStatus(report, requester);
+  // And in the client's portal, beside the email.
+  if (target === "published") await notifyReportPublished(report, requester);
 
   return ApiResponse(res, 200, `Report is now ${target}`, report);
 });

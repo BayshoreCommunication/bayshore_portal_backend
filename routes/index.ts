@@ -12,6 +12,7 @@ import auditLogRoutes from "./auditLog.route";
 import notificationRoutes from "./notification.route";
 import messageRoutes from "./message.route";
 import onboardingRoutes from "./onboarding.route";
+import dashboardRoutes from "./dashboard.route";
 
 const router = Router();
 
@@ -50,6 +51,7 @@ router.use("/payments", paymentRoutes);
 router.use("/audit-logs", auditLogRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/messages", messageRoutes);
+router.use("/dashboard", dashboardRoutes);
 // Open routes (no sign-in): the onboarding form, kept to its own answers by a key.
 router.use("/onboarding", onboardingRoutes);
 

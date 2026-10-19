@@ -9,6 +9,10 @@ import { ApiError } from "../utils/ApiError";
 import { deleteFromSpaces } from "../utils/uploadToSpaces";
 import { clientScopeFor as scopeFor } from "../utils/clientAccess";
 import { emailClientAdded, emailPortalLogin } from "../utils/activityEmails";
+import { unseal } from "../utils/secretBox";
+
+// The roles that manage clients — the only ones shown a client's portal password.
+const CAN_SEE_PASSWORD: string[] = ["assistant_manager", "manager", "admin", "superadmin"];
 
 // A client's business status decides whether its logins may sign in.
 const USER_STATUS_FOR: Record<ClientStatus, UserStatus> = {
@@ -267,7 +271,19 @@ export const getClient = asyncHandler(async (req: Request, res: Response) => {
     .populate("user", "fullName email phone avatar status lastLoginAt");
   if (!client) throw new ApiError(404, "Client not found");
 
-  return ApiResponse(res, 200, "Client fetched successfully", client);
+  // Those who manage clients can read the portal password back. One set before it was kept
+  // readable — or sealed with another key — comes back as nothing.
+  let portalPassword: string | undefined;
+  if (CAN_SEE_PASSWORD.includes(requester.role) && client.user) {
+    const login = await User.findById(client.user).select("+passwordSealed").lean();
+    try {
+      portalPassword = login?.passwordSealed ? unseal(login.passwordSealed) : undefined;
+    } catch {
+      portalPassword = undefined;
+    }
+  }
+
+  return ApiResponse(res, 200, "Client fetched successfully", { ...client.toJSON(), portalPassword });
 });
 
 export const updateClient = asyncHandler(async (req: Request, res: Response) => {

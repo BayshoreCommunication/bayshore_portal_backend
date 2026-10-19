@@ -8,6 +8,9 @@ import {
 import { Client } from "../models/client.model";
 import { User, type IUser } from "../models/user.model";
 import type { IContent } from "../models/content.model";
+import type { IReport } from "../models/report.model";
+import type { IProject } from "../models/project.model";
+import { emitToUsers } from "../realtime/messagesRealtime";
 import { env } from "../config/env";
 import { activityEmail, emailReady, sendEmail, type EmailTone } from "./email";
 
@@ -60,6 +63,8 @@ const EMAIL_LOOK: Record<NotificationType, { eyebrow: string; tone: EmailTone; b
   content_approved: { eyebrow: "Approved", tone: "success", button: "Open the piece" },
   content_caption_edited: { eyebrow: "Caption edited", tone: "info", button: "See what changed" },
   message: { eyebrow: "New message", tone: "info", button: "Read the message" },
+  report_published: { eyebrow: "New report", tone: "success", button: "Read your report" },
+  project_created: { eyebrow: "New project", tone: "action", button: "View the project" },
 };
 
 // The same notification by email, to those of the recipients who have an address. Clients get
@@ -253,6 +258,54 @@ export const notifyClientEditedCaption = quietly(async (content: IContent, actor
     content,
     actor,
     email: "team",
+  });
+});
+
+// ── To the client, about more than a piece ───────────────────────────────────
+
+// In the client's bell too, for what they are already emailed about by utils/activityEmails.ts
+// (a report published, a project started) — so no second email goes with it.
+const notifyClientLogins = async (
+  clientId: Id,
+  actor: IUser,
+  { type, title, body, link }: { type: NotificationType; title: string; body?: string; link: string }
+) => {
+  const recipients = (await clientLoginsOf(clientId)).filter((id) => String(id) !== String(actor._id));
+  if (!recipients.length) return;
+  await Notification.insertMany(
+    recipients.map((recipient) => ({
+      recipient,
+      type,
+      title: clip(title, NOTIFICATION_TITLE_MAX_LENGTH),
+      body: body ? clip(body, NOTIFICATION_BODY_MAX_LENGTH) : undefined,
+      link,
+      actor: actor._id,
+      actorName: actor.fullName,
+      client: clientId,
+      pieces: 1,
+    }))
+  );
+  emitToUsers(recipients.map(String), "notifications:new", { type, client: String(clientId) });
+};
+
+// A report was published for the client.
+export const notifyReportPublished = quietly(async (report: IReport, actor: IUser) => {
+  await notifyClientLogins(report.client, actor, {
+    type: "report_published",
+    title: `Your ${report.title} is ready`,
+    body: "Your latest performance report is in your portal.",
+    link: `/reports/${report._id}`,
+  });
+});
+
+// The team started a project for the client. (One the client asked for themselves, they know about.)
+export const notifyProjectCreated = quietly(async (project: IProject, actor: IUser) => {
+  if (project.requestedBy === "client") return;
+  await notifyClientLogins(project.client, actor, {
+    type: "project_created",
+    title: `We've started a new project for you: ${project.name}`,
+    body: project.description?.slice(0, NOTIFICATION_BODY_MAX_LENGTH),
+    link: `/projects/${project._id}`,
   });
 });
 

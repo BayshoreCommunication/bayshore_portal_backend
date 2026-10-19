@@ -7,6 +7,7 @@ export const REDACTED = "[redacted]";
 // Never written to the log in readable form.
 export const DEFAULT_SENSITIVE_FIELDS = [
   "password",
+  "passwordSealed",
   "tokenHash",
   "replacedByTokenHash",
   "refreshToken",

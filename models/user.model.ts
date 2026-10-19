@@ -1,6 +1,7 @@
 import mongoose, { Schema, Document } from "mongoose";
 import bcrypt from "bcryptjs";
 import { auditPlugin } from "../plugins/auditPlugin";
+import { seal } from "../utils/secretBox";
 
 export const USER_ROLES = [
   "employee",
@@ -43,6 +44,8 @@ export interface IUser extends Document {
   email?: string;
   avatar?: string;
   password: string;
+  // A client login's password, sealed (utils/secretBox.ts), so the team can read it back to them.
+  passwordSealed?: string;
   role: UserRole;
   status: UserStatus;
   muted: boolean;
@@ -190,6 +193,10 @@ const userSchema = new Schema<IUser>(
       minlength: [6, "Password must be at least 6 characters"],
       select: false,
     },
+    passwordSealed: {
+      type: String,
+      select: false,
+    },
     role: {
       type: String,
       enum: USER_ROLES,
@@ -227,6 +234,8 @@ userSchema.pre("validate", function (next) {
 
 userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
+  // Only a client's portal password is kept readable for the team — never a staff member's.
+  this.passwordSealed = this.role === "client" ? seal(this.password) : undefined;
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
   next();
@@ -240,7 +249,7 @@ userSchema.methods.comparePassword = function (
 
 userSchema.set("toJSON", {
   transform: (_doc, ret) => {
-    const { password, ...rest } = ret as typeof ret & { password?: string };
+    const { password, passwordSealed, ...rest } = ret as typeof ret & { password?: string; passwordSealed?: string };
     return rest;
   },
 });

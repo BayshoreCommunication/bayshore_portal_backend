@@ -9,6 +9,8 @@ import mongoose, { Schema, Document } from "mongoose";
 //   content_sent        the team sent one or more pieces for approval
 //   content_resubmitted the team sent a piece back after making the requested changes
 //   content_comment     the team replied on a piece's comments
+//   report_published    a report was published for them to read
+//   project_created     the team started a new project for them
 //
 // To the staff on that client (the company portal):
 //   content_feedback        the client asked for changes
@@ -26,6 +28,8 @@ export const NOTIFICATION_TYPES = [
   "content_approved",
   "content_caption_edited",
   "message",
+  "report_published",
+  "project_created",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -76,7 +80,7 @@ export interface INotification extends Document {
  *         recipient: { type: string, description: User id of the person it is for }
  *         type:
  *           type: string
- *           enum: [content_sent, content_resubmitted, content_comment, content_feedback, content_approved, content_caption_edited]
+ *           enum: [content_sent, content_resubmitted, content_comment, content_feedback, content_approved, content_caption_edited, message, report_published, project_created]
  *         title: { type: string, example: Carter Injury Law asked for changes }
  *         body: { type: string, description: 'The piece''s title, or the start of the comment' }
  *         link: { type: string, description: 'Path in the recipient''s own portal', example: /content/665f1c2ab7e4c81d9a0f3b21 }
