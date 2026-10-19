@@ -6,6 +6,7 @@ import { ApiError } from "../utils/ApiError";
 import { asyncHandler } from "./asyncHandler";
 import type { TokenPayload } from "../utils/generateToken";
 import { setContextActor } from "../utils/requestContext";
+import { CLIENT_NOT_ALLOWED_MESSAGE, clientMaySignIn } from "../utils/clientLogin";
 
 export const protect = asyncHandler(
   async (req: Request, res: Response, next: NextFunction) => {
@@ -29,6 +30,10 @@ export const protect = asyncHandler(
     }
     if (user.status !== "active") {
       throw new ApiError(403, STATUS_BLOCK_MESSAGES[user.status]);
+    }
+    // A client login, only while its client is being onboarded or is active.
+    if (!(await clientMaySignIn(user))) {
+      throw new ApiError(403, CLIENT_NOT_ALLOWED_MESSAGE);
     }
 
     req.user = user;

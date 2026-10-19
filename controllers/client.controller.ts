@@ -8,7 +8,7 @@ import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
 import { deleteFromSpaces } from "../utils/uploadToSpaces";
 import { clientScopeFor as scopeFor } from "../utils/clientAccess";
-import { emailClientAdded } from "../utils/activityEmails";
+import { emailClientAdded, emailPortalLogin } from "../utils/activityEmails";
 
 // A client's business status decides whether its logins may sign in.
 const USER_STATUS_FOR: Record<ClientStatus, UserStatus> = {
@@ -198,8 +198,9 @@ export const createClient = asyncHandler(async (req: Request, res: Response) => 
     throw error;
   }
 
-  // A welcome to the client, and word to the staff put on it.
-  await emailClientAdded(client, requester, withLogin);
+  // A welcome to the client — with their sign-in email and password, when they were given a
+  // login — and word to the staff put on it.
+  await emailClientAdded(client, requester, withLogin ? password : undefined);
 
   return ApiResponse(res, 201, "Client created successfully", { client, user });
 });
@@ -321,6 +322,8 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   if (accountManager !== undefined) client.accountManager = accountManager || undefined;
   if (team !== undefined) client.team = team;
 
+  // Whether this save gives the client their first login (rather than a new password).
+  const loginCreated = Boolean(password && !loginUser);
   if (password && !loginUser) {
     loginUser = new User({
       fullName: client.contactName,
@@ -354,6 +357,8 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
 
   // A replaced password invalidates any sessions authenticated with the old one.
   if (password && loginUser) await RefreshToken.deleteMany({ user: loginUser._id });
+  // The client gets the way in: their sign-in email and the password just set.
+  if (password && loginUser) await emailPortalLogin(client, password, loginCreated);
 
   // Closing or pausing a client shuts every one of its logins, not just the main one.
   if (status !== undefined) {

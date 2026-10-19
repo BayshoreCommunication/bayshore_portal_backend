@@ -60,8 +60,8 @@ const day = (date?: Date) => (date ? new Date(date).toLocaleDateString("en-US", 
 // ── A client added ───────────────────────────────────────────────────────────
 
 // The team added a client: a welcome to the client — with the way in, when they were given a
-// login — and word to the staff put on it.
-export const emailClientAdded = quietly(async (client: IClient, actor: IUser, withLogin: boolean) => {
+// login: the email to sign in with and the password the team set — and word to the staff put on it.
+export const emailClientAdded = quietly(async (client: IClient, actor: IUser, password?: string) => {
   const manager = client.accountManager ? await User.findById(client.accountManager).select("fullName email").lean() : null;
 
   await sendEmail({
@@ -71,16 +71,17 @@ export const emailClientAdded = quietly(async (client: IClient, actor: IUser, wi
       eyebrow: "Welcome",
       tone: "success",
       title: `Welcome to BayShore Communication, ${client.companyName}`,
-      body: withLogin
-        ? "Your client portal is ready. Sign in to follow your content, reports and projects, and to reach your team any time."
+      body: password
+        ? "Your client portal is ready. Sign in with the details below to follow your content, reports and projects, and to reach your team any time. Please keep your password private."
         : "We're glad to be working with you. Your BayShore team will be in touch with your next steps.",
       details: [
         ["Company", client.companyName],
-        ["Sign-in email", withLogin ? client.email : undefined],
+        ["Sign-in email", password ? client.email : undefined],
+        ["Password", password],
         ["Your account manager", manager?.fullName],
         ["Services", client.serviceTypes.join(", ")],
       ],
-      button: withLogin ? { label: "Sign in to your portal", url: clientUrl("/sign-in") } : undefined,
+      button: password ? { label: "Sign in to your portal", url: clientUrl("/sign-in") } : undefined,
     }),
   });
 
@@ -97,6 +98,29 @@ export const emailClientAdded = quietly(async (client: IClient, actor: IUser, wi
     ],
     button: { label: "Open the client", url: teamUrl(`/clients/${client._id}`) },
     audience: "team",
+  });
+});
+
+// The team gave an existing client a portal login, or set a new password for theirs: the
+// client gets the email to sign in with and the password.
+export const emailPortalLogin = quietly(async (client: IClient, password: string, created: boolean) => {
+  await sendEmail({
+    to: client.email,
+    ...activityEmail({
+      name: client.contactName,
+      eyebrow: created ? "Your portal is ready" : "Password changed",
+      tone: created ? "success" : "alert",
+      title: created ? "Your BayShore client portal login" : "Your portal password was changed",
+      body: created
+        ? "Your BayShore team set up your client portal. Sign in with the details below. Please keep your password private."
+        : "Your BayShore team set a new password for your client portal. Sign in with the details below. If you didn't ask for this, reply to this email.",
+      details: [
+        ["Company", client.companyName],
+        ["Sign-in email", client.email],
+        ["Password", password],
+      ],
+      button: { label: "Sign in to your portal", url: clientUrl("/sign-in") },
+    }),
   });
 });
 

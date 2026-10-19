@@ -14,6 +14,7 @@ import { hashToken, issueRefreshToken, rotateRefreshToken, revokeRefreshTokenCha
 // requests that were already on their way with it — without that counting as reuse.
 const REFRESH_REUSE_GRACE_MS = 2 * 60 * 1000;
 import { env } from "../config/env";
+import { CLIENT_NOT_ALLOWED_MESSAGE, clientMaySignIn } from "../utils/clientLogin";
 import { logAudit } from "../utils/audit";
 
 const failedLogin = (identifier: string, reason: string, user?: IUser) =>
@@ -103,6 +104,11 @@ export const clientSignin = asyncHandler(async (req: Request, res: Response) => 
     throw new ApiError(401, "Invalid credentials");
   }
   await assertActive(user);
+  // Only while their client is being onboarded or is active.
+  if (!(await clientMaySignIn(user))) {
+    await failedLogin(String(identifier).trim(), "client_not_active", user);
+    throw new ApiError(403, CLIENT_NOT_ALLOWED_MESSAGE);
+  }
 
   const tokens = await issueAuthTokens(user);
   await logSignin(user, "client");
@@ -213,7 +219,7 @@ export const refreshAccessToken = asyncHandler(async (req: Request, res: Respons
   }
 
   const user = await User.findById(stored.user);
-  if (!user || user.status !== "active") {
+  if (!user || user.status !== "active" || !(await clientMaySignIn(user))) {
     throw new ApiError(401, "Account is no longer active");
   }
 
