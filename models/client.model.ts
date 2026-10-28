@@ -44,6 +44,9 @@ export type OnboardingWebsiteNeed = (typeof ONBOARDING_WEBSITE_NEEDS)[number];
 // How access to an account is given: by inviting our access email, or by sharing the login
 // through a secure link (never typed into the form).
 export const ONBOARDING_ACCESS_METHODS = ["invite", "secure"] as const;
+// With a CMS, what access they give us: its dashboard, the hosting, or both.
+export const ONBOARDING_CMS_GIVING = ["cms", "hosting", "both"] as const;
+export type OnboardingCmsGiving = (typeof ONBOARDING_CMS_GIVING)[number];
 export type OnboardingAccessMethod = (typeof ONBOARDING_ACCESS_METHODS)[number];
 
 // Photos and videos: upload what they have, have us make them, or not needed.
@@ -128,6 +131,11 @@ export interface IOnboardingFile {
 // whether access has been given by following its steps — or help is needed with them.
 interface IOnboardingPlatform {
   platform?: string;
+  // How they let us in: inviting our access email, or sharing the login itself ("secure").
+  access?: OnboardingAccessMethod;
+  loginUsername?: string;
+  // Sealed (utils/secretBox) before it is stored; never sent back to the client.
+  loginPassword?: string;
   accessGiven?: boolean;
   needsHelp?: boolean;
 }
@@ -222,6 +230,8 @@ export interface IClientOnboarding {
   // appointment schedule, which doesn't tell us — so this is the client's own word.
   kickoffCall?: {
     booked?: boolean;
+    // When they first said so — set here (the save hook below), never sent by a portal.
+    bookedAt?: Date;
   };
 
   website?: {
@@ -252,6 +262,8 @@ export interface IClientOnboarding {
 
   // The website's own login (WordPress, Wix…). `developer` is who built or maintains a custom site.
   cms?: IOnboardingPlatform & {
+    has?: OnboardingHas;
+    giving?: OnboardingCmsGiving;
     developer?: string;
   };
 
@@ -316,6 +328,17 @@ export const CLIENT_CONTRACT_SIGNED = ["yes", "sent", "no"] as const;
 export type ClientContractSigned = (typeof CLIENT_CONTRACT_SIGNED)[number];
 
 // One service the client has agreed to, as it was set up for them.
+// A service the client asked for from their portal.
+export const SERVICE_REQUEST_STATUSES = ["open", "added", "dismissed"] as const;
+export type ServiceRequestStatus = (typeof SERVICE_REQUEST_STATUSES)[number];
+export interface IServiceRequest {
+  _id: mongoose.Types.ObjectId;
+  name: string;
+  note?: string;
+  status: ServiceRequestStatus;
+  requestedAt: Date;
+}
+
 export interface IClientServicePlan {
   name: string;
   // The quantities and prices, each under its label on the form.
@@ -326,6 +349,13 @@ export interface IClientServicePlan {
   included: string[];
   // Rates to quote if the client asks for more later. Not billed now.
   addons: { label: string; price: number }[];
+  // A service the team named itself, not one of the form's list: priced each month (`monthly`)
+  // or once (`oneTime`).
+  custom?: boolean;
+  oneTime?: number;
+  // For one paid once: when it is due (yyyy-mm-dd), and/or how long it takes ("2 weeks").
+  deadline?: string;
+  duration?: string;
 }
 
 export interface IClientDetails {
@@ -391,6 +421,18 @@ export interface IClientDetails {
   reportDelivery?: string;
 }
 
+// The emails that walk a new client through onboarding (utils/onboardingEmails.ts): the welcome,
+// the reminders to book their onboarding call, and the confirmation once they have. Kept so that
+// each goes out once — and never to a client from before these emails existed.
+export interface IOnboardingEmails {
+  welcomeSentAt?: Date;
+  // How many reminders have gone out, and when the last one did.
+  reminders: number;
+  lastReminderAt?: Date;
+  // The "your call is booked" email.
+  callBookedSentAt?: Date;
+}
+
 export interface IClient extends Document {
   contactName: string;
   companyName: string;
@@ -400,6 +442,9 @@ export interface IClient extends Document {
   serviceTypes: string[];
   startDate: Date;
   status: ClientStatus;
+  // Services the client asked for from their portal (client-portal: Services → Request). The
+  // team adds one as a custom service, or sets it aside.
+  serviceRequests: IServiceRequest[];
   notes?: string;
   // What the team recorded about them. Missing for a client added before the form asked.
   details?: IClientDetails;
@@ -415,6 +460,8 @@ export interface IClient extends Document {
   // The SHA-256 of the key handed to whoever started onboarding without an account — it lets
   // them come back to their own answers (routes/onboarding.route.ts). Never sent anywhere.
   onboardingKeyHash?: string;
+  // Which onboarding emails have gone out, so each goes once (utils/onboardingEmails.ts).
+  onboardingEmails?: IOnboardingEmails;
   user?: mongoose.Types.ObjectId;
   accountManager?: mongoose.Types.ObjectId;
   team: mongoose.Types.ObjectId[];
@@ -641,6 +688,9 @@ const onboardingFileSchema = new Schema<IOnboardingFile>(
 // What every platform we need access to carries.
 const platformFields = {
   platform: shortText,
+  access: { type: String, enum: ONBOARDING_ACCESS_METHODS },
+  loginUsername: shortText,
+  loginPassword: { type: String },
   accessGiven: { type: Boolean },
   needsHelp: { type: Boolean },
 };
@@ -720,7 +770,7 @@ const onboardingSchema = new Schema<IClientOnboarding>(
     },
 
     kickoffCall: {
-      type: new Schema({ booked: { type: Boolean } }, { _id: false }),
+      type: new Schema({ booked: { type: Boolean }, bookedAt: { type: Date } }, { _id: false }),
     },
 
     website: {
@@ -763,7 +813,17 @@ const onboardingSchema = new Schema<IClientOnboarding>(
     },
 
     cms: {
-      type: new Schema({ ...platformFields, developer: shortText }, { _id: false }),
+      type: new Schema(
+        {
+          // Whether the website is built on one (WordPress, Shopify…) at all.
+          has: { type: String, enum: ONBOARDING_HAS },
+          // With one, what they let us into: its dashboard, the hosting, or both.
+          giving: { type: String, enum: ONBOARDING_CMS_GIVING },
+          ...platformFields,
+          developer: shortText,
+        },
+        { _id: false }
+      ),
     },
 
     email: {
@@ -848,6 +908,10 @@ const clientServicePlanSchema = new Schema<IClientServicePlan>(
     monthly: { ...amountField, default: 0 },
     included: shortList,
     addons: { type: [new Schema({ label: shortText, price: amountField }, { _id: false })], default: [] },
+    custom: { type: Boolean },
+    oneTime: { ...amountField, default: 0 },
+    deadline: shortText,
+    duration: shortText,
   },
   { _id: false }
 );
@@ -938,18 +1002,24 @@ const clientSchema = new Schema<IClient>(
       trim: true,
       default: "",
     },
+    // What the client asked for from their portal, oldest first.
+    serviceRequests: {
+      type: [
+        new Schema(
+          {
+            name: { ...shortText, required: true },
+            note: shortText,
+            status: { type: String, enum: SERVICE_REQUEST_STATUSES, default: "open" },
+            requestedAt: { type: Date, default: Date.now },
+          },
+          { _id: true }
+        ),
+      ],
+      default: [],
+    },
+    // Any number, none included: a client can be saved before their services are chosen.
     serviceTypes: {
       type: [{ type: String, trim: true }],
-      validate: {
-        // A client who came in through the onboarding form has none to begin with: the team
-        // picks them once they have taken the client on. So does any client still pending, and
-        // one who made their own account (auth.controller.ts → clientSignup) — nobody on the
-        // team created that record, so there is no `createdBy`.
-        validator: function (this: IClient, value: string[]) {
-          return value.length > 0 || this?.status === "pending" || Boolean(this?.onboarding?.status) || !this?.createdBy;
-        },
-        message: "Select at least one service type",
-      },
     },
     startDate: {
       type: Date,
@@ -973,6 +1043,17 @@ const clientSchema = new Schema<IClient>(
     // Not set until the client starts the onboarding form.
     onboarding: { type: onboardingSchema },
     onboardingKeyHash: { type: String, select: false },
+    onboardingEmails: {
+      type: new Schema<IOnboardingEmails>(
+        {
+          welcomeSentAt: { type: Date },
+          reminders: { type: Number, default: 0 },
+          lastReminderAt: { type: Date },
+          callBookedSentAt: { type: Date },
+        },
+        { _id: false }
+      ),
+    },
     user: { type: Schema.Types.ObjectId, ref: "User" },
     accountManager: { type: Schema.Types.ObjectId, ref: "User" },
     team: { type: [{ type: Schema.Types.ObjectId, ref: "User" }], default: [] },
@@ -980,6 +1061,15 @@ const clientSchema = new Schema<IClient>(
   },
   { timestamps: true }
 );
+
+// When the client says they booked their onboarding call, the moment is kept; if they take it
+// back, it goes. However the answer arrives — signing up, or the onboarding page.
+clientSchema.pre("save", function (next) {
+  const call = this.onboarding?.kickoffCall;
+  if (call?.booked && !call.bookedAt) this.set("onboarding.kickoffCall.bookedAt", new Date());
+  else if (call && !call.booked && call.bookedAt) this.set("onboarding.kickoffCall.bookedAt", undefined);
+  next();
+});
 
 clientSchema.index({ status: 1, createdAt: -1 });
 clientSchema.index({ accountManager: 1 });

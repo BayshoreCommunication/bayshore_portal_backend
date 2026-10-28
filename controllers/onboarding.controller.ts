@@ -19,8 +19,10 @@ import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
 import { ONBOARDING_KEY_HEADER, ONBOARDING_SECTIONS } from "../validators/onboarding.validator";
-import { seal } from "../utils/secretBox";
+import { seal, unseal } from "../utils/secretBox";
 import { deleteFromSpaces, uploadToSpaces } from "../utils/uploadToSpaces";
+import { callBookedOf, emailCallBooked } from "../utils/onboardingEmails";
+import { canAccessClient } from "../utils/clientAccess";
 
 // Onboarding, for someone who has no account yet. Nobody is signed in here, so these routes
 // are open — and what keeps one visitor's answers from another is a key:
@@ -57,6 +59,8 @@ const withoutFiles = (value: unknown): unknown => {
 
 // The sections made of accounts (Google, social media), where a login may be shared.
 const ACCOUNT_SECTIONS: readonly string[] = ["google", "social"];
+// The platforms we get into — by an invite, or with the login they share — each one per section.
+const PLATFORM_SECTIONS: readonly string[] = ["domain", "hosting", "cms"];
 const PASSWORD_MAX_LENGTH = 200;
 
 // An account's password comes in as typed (`loginPassword`) and is sealed before it is stored.
@@ -80,6 +84,19 @@ const withPasswords = (client: IClient, section: string, incoming: unknown): unk
   );
 };
 
+// The same for a platform (the domain, hosting, the website's login), which is one login to a section.
+const withPlatformPassword = (client: IClient, section: string, incoming: unknown): unknown => {
+  if (!isPlainObject(incoming)) return incoming;
+  const { loginPassword: typed, loginPasswordSet: _never, ...rest } = incoming;
+  if (rest.access !== "secure") return rest;
+  if (typeof typed === "string" && typed !== "") {
+    if (typed.length > PASSWORD_MAX_LENGTH) throw new ApiError(422, `A password cannot exceed ${PASSWORD_MAX_LENGTH} characters`);
+    return { ...rest, loginPassword: seal(typed) };
+  }
+  const kept: unknown = client.get(`onboarding.${section}.loginPassword`);
+  return typeof kept === "string" && kept ? { ...rest, loginPassword: kept } : rest;
+};
+
 // The answers as they go back to whoever gave them: a stored password is left out, with only
 // the fact that there is one (`loginPasswordSet`) in its place.
 const withoutPasswords = (client: IClient) => {
@@ -93,6 +110,12 @@ const withoutPasswords = (client: IClient) => {
       delete account.loginPassword;
       account.loginPasswordSet = true;
     }
+  }
+  for (const section of PLATFORM_SECTIONS) {
+    const platform = onboarding[section];
+    if (!isPlainObject(platform) || !platform.loginPassword) continue;
+    delete platform.loginPassword;
+    platform.loginPasswordSet = true;
   }
   return onboarding;
 };
@@ -133,10 +156,12 @@ const withStoredFiles = (client: IClient, incoming: unknown): unknown => {
 // Puts the sections that were sent (under `answers`) onto the record. A section replaces what
 // was there for it; one left out is untouched. Only the form's own sections are read — a
 // visitor can't reach the rest of the client record (its status, its team) through here.
-const applyAnswers = (client: IClient, body: Plain) => {
+// `byTeam`: the team filling answers in for the client (updateClientOnboarding) — that neither
+// starts the client's onboarding nor hands it in.
+const applyAnswers = (client: IClient, body: Plain, byTeam = false) => {
   if (!client.onboarding) client.set("onboarding", {});
   // The client is on the form now, whatever of it the team had recorded before.
-  if (!client.get("onboarding.status")) client.set("onboarding.status", "in_progress");
+  if (!byTeam && !client.get("onboarding.status")) client.set("onboarding.status", "in_progress");
   const answers = isPlainObject(body.answers) ? body.answers : {};
   for (const section of ONBOARDING_SECTIONS) {
     if (answers[section] === undefined) continue;
@@ -145,14 +170,21 @@ const applyAnswers = (client: IClient, body: Plain) => {
       `onboarding.${section}`,
       ACCOUNT_SECTIONS.includes(section)
         ? withKeptAccounts(client, section, withPasswords(client, section, sent))
-        : section === "media"
+        : PLATFORM_SECTIONS.includes(section)
+          ? withPlatformPassword(client, section, sent)
+          : section === "media"
           ? withStoredFiles(client, sent)
           : // The logo's files are uploaded on their own too: saving its answers keeps them.
             section === "logo" && isPlainObject(sent)
             ? { ...sent, files: mediaFilesOf(client, "logo"), styleFiles: mediaFilesOf(client, "logoStyle") }
-            : sent
+            : // When the call was booked is the record's own (the client model's save hook): it is
+              // kept while it stays booked, and nothing sent can set it.
+              section === "kickoffCall" && isPlainObject(sent)
+              ? { booked: sent.booked, ...(sent.booked ? { bookedAt: client.onboarding?.kickoffCall?.bookedAt } : {}) }
+              : sent
     );
   }
+  if (byTeam) return;
   // `submit: true` hands it in; `submit: false` takes it back to keep working on it.
   if (body.submit === true) {
     client.set("onboarding.status", "submitted");
@@ -264,6 +296,7 @@ export const getMyOnboarding = asyncHandler(async (req: Request, res: Response) 
 export const updateMyOnboarding = asyncHandler(async (req: Request, res: Response) => {
   const client = await findMine(req);
   const login = req.user!;
+  const wasBooked = callBookedOf(client);
 
   for (const field of ["contactName", "companyName"] as const) {
     if (req.body[field] !== undefined) client[field] = req.body[field];
@@ -293,6 +326,10 @@ export const updateMyOnboarding = asyncHandler(async (req: Request, res: Respons
   await client.save();
   if (isMainLogin) await login.save();
 
+  // They've just said they booked their onboarding call ("I've booked my call"): confirm it.
+  // Not waited for, and sent once however often it is said again (utils/onboardingEmails.ts).
+  if (!wasBooked && callBookedOf(client)) void emailCallBooked(client);
+
   return ApiResponse(res, 200, req.body.submit === true ? "Onboarding submitted" : "Onboarding saved", viewOf(client));
 });
 
@@ -309,8 +346,19 @@ const UPLOAD_FORMATS: Record<OnboardingUploadKind, string> = {
 
 // POST /onboarding/me/media/:kind — add photos or videos of one kind, or logo files. They go to DigitalOcean
 // Spaces, and are listed on the client's record with the rest of their onboarding.
-export const uploadMyOnboardingMedia = asyncHandler(async (req: Request, res: Response) => {
-  const client = await findMine(req);
+// A client the signed-in team member may work on (utils/clientAccess).
+const findStaffClient = async (req: Request) => {
+  if (!(await canAccessClient(req.user!, req.params.clientId))) throw new ApiError(404, "Client not found");
+  const client = await Client.findById(req.params.clientId);
+  if (!client) throw new ApiError(404, "Client not found");
+  return client;
+};
+
+// Uploading for the client themselves, or for the team (`byTeam`) on a client's onboarding page —
+// which neither starts the client's onboarding nor answers anything for them.
+const uploadMediaFor = (find: (req: Request) => Promise<IClient>, byTeam = false) =>
+  asyncHandler(async (req: Request, res: Response) => {
+  const client = await find(req);
   const kind = req.params.kind as OnboardingUploadKind;
   const incoming = uploadedFilesOf(req);
   if (!incoming.length) throw new ApiError(422, "Choose at least one file to upload");
@@ -336,7 +384,7 @@ export const uploadMyOnboardingMedia = asyncHandler(async (req: Request, res: Re
       added.push({ url, name: file.originalname, size: file.size, mimeType: file.mimetype });
     }
     if (!client.onboarding) client.set("onboarding", {});
-    if (!client.get("onboarding.status")) client.set("onboarding.status", "in_progress");
+    if (!byTeam && !client.get("onboarding.status")) client.set("onboarding.status", "in_progress");
     client.set(filesPathOf(kind), [...stored, ...added]);
     // Uploading is choosing "share what I have" — or, for a logo, saying there is one. What
     // shows the style of a logo to be designed answers nothing by itself.
@@ -350,11 +398,15 @@ export const uploadMyOnboardingMedia = asyncHandler(async (req: Request, res: Re
   }
 
   return ApiResponse(res, 201, incoming.length === 1 ? "File uploaded" : "Files uploaded", { files: mediaFilesOf(client, kind) });
-});
+  });
+export const uploadMyOnboardingMedia = uploadMediaFor(findMine);
+// POST /onboarding/clients/:clientId/media/:kind — the team adds files for the client.
+export const uploadClientOnboardingMedia = uploadMediaFor(findStaffClient, true);
 
 // DELETE /onboarding/me/media/:kind — take one uploaded file back. Its URL comes in the body.
-export const removeMyOnboardingMedia = asyncHandler(async (req: Request, res: Response) => {
-  const client = await findMine(req);
+const removeMediaFor = (find: (req: Request) => Promise<IClient>) =>
+  asyncHandler(async (req: Request, res: Response) => {
+  const client = await find(req);
   const kind = req.params.kind as OnboardingUploadKind;
   const url = String(req.body.url);
 
@@ -367,7 +419,10 @@ export const removeMyOnboardingMedia = asyncHandler(async (req: Request, res: Re
   await deleteFromSpaces(url).catch(() => undefined);
 
   return ApiResponse(res, 200, "File removed", { files: mediaFilesOf(client, kind) });
-});
+  });
+export const removeMyOnboardingMedia = removeMediaFor(findMine);
+// DELETE /onboarding/clients/:clientId/media/:kind — the team takes one of the client's files off.
+export const removeClientOnboardingMedia = removeMediaFor(findStaffClient);
 
 // ── For the team ─────────────────────────────────────────────────────────────
 
@@ -417,4 +472,38 @@ export const getOnboardingRequest = asyncHandler(async (req: Request, res: Respo
   if (!client) throw new ApiError(404, "Onboarding request not found");
 
   return ApiResponse(res, 200, "Onboarding request fetched successfully", client);
+});
+
+// PATCH /onboarding/clients/:clientId — the team fills in or corrects a client's onboarding
+// answers (company portal: the client's onboarding page). The same sections as the client's own
+// form, kept the same way: a password is only ever replaced by a new one, uploaded files stay.
+export const updateClientOnboarding = asyncHandler(async (req: Request, res: Response) => {
+  if (!(await canAccessClient(req.user!, req.params.clientId))) throw new ApiError(404, "Client not found");
+  const client = await Client.findById(req.params.clientId);
+  if (!client) throw new ApiError(404, "Client not found");
+  applyAnswers(client, { answers: req.body.answers }, true);
+  await client.save();
+  return ApiResponse(res, 200, "Onboarding updated", viewOf(client));
+});
+
+// Where a login the client shared is kept: a platform (domain, hosting, cms) or an account
+// (google.ads, social.instagram…).
+const LOGIN_PATH = /^(domain|hosting|cms|google\.[a-zA-Z]+|social\.[a-zA-Z]+)$/;
+
+// GET /onboarding/clients/:clientId/password?login=hosting — one password the client shared, opened
+// for the team member who asks (only on demand: the client's record never carries it readable).
+export const revealClientOnboardingPassword = asyncHandler(async (req: Request, res: Response) => {
+  const login = String(req.query.login ?? "");
+  if (!LOGIN_PATH.test(login)) throw new ApiError(422, "Unknown login");
+  if (!(await canAccessClient(req.user!, req.params.clientId))) throw new ApiError(404, "Client not found");
+  const client = await Client.findById(req.params.clientId).select(`onboarding.${login}.loginPassword`);
+  if (!client) throw new ApiError(404, "Client not found");
+  const sealed: unknown = client.get(`onboarding.${login}.loginPassword`);
+  if (typeof sealed !== "string" || !sealed) throw new ApiError(404, "No password saved for this login");
+  try {
+    return ApiResponse(res, 200, "Password", { password: unseal(sealed) });
+  } catch {
+    // Sealed with another key, or not ours at all.
+    throw new ApiError(410, "This password can't be read any more — ask the client for it again");
+  }
 });

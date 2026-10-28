@@ -6,6 +6,7 @@ import { User, type IUser } from "../models/user.model";
 import { env } from "../config/env";
 import { activityEmail, emailReady, sendEmail, type ActivityEmail } from "./email";
 import { REPORT_REVIEW_ROLES } from "./reportAccess";
+import { onboardingDue, onboardingSteps } from "./onboardingEmails";
 
 // Emails for what happens outside a piece of content (whose own are in utils/notifications.ts):
 // a client added, a report handed in or published, a project started. The client hears what the
@@ -61,8 +62,11 @@ const day = (date?: Date) => (date ? new Date(date).toLocaleDateString("en-US", 
 
 // The team added a client: a welcome to the client — with the way in, when they were given a
 // login: the email to sign in with and the password the team set — and word to the staff put on it.
+// A client given a login who still has onboarding to do is asked, as one who signs up is, to fill
+// in the onboarding form and book the onboarding call (utils/onboardingEmails.ts).
 export const emailClientAdded = quietly(async (client: IClient, actor: IUser, password?: string) => {
   const manager = client.accountManager ? await User.findById(client.accountManager).select("fullName email").lean() : null;
+  const onboarding = password && onboardingDue(client);
 
   await sendEmail({
     to: client.email,
@@ -71,9 +75,12 @@ export const emailClientAdded = quietly(async (client: IClient, actor: IUser, pa
       eyebrow: "Welcome",
       tone: "success",
       title: `Welcome to BayShore Communication, ${client.companyName}`,
-      body: password
-        ? "Your client portal is ready. Sign in with the details below to follow your content, reports and projects, and to reach your team any time. Please keep your password private."
-        : "We're glad to be working with you. Your BayShore team will be in touch with your next steps.",
+      body: onboarding
+        ? "Your client portal is ready. Sign in with the details below, then take the two quick steps that get us started. Please keep your password private."
+        : password
+          ? "Your client portal is ready. Sign in with the details below to follow your content, reports and projects, and to reach your team any time. Please keep your password private."
+          : "We're glad to be working with you. Your BayShore team will be in touch with your next steps.",
+      list: onboarding ? onboardingSteps(client) : undefined,
       details: [
         ["Company", client.companyName],
         ["Sign-in email", password ? client.email : undefined],
@@ -81,7 +88,9 @@ export const emailClientAdded = quietly(async (client: IClient, actor: IUser, pa
         ["Your account manager", manager?.fullName],
         ["Services", client.serviceTypes.join(", ")],
       ],
-      button: password ? { label: "Sign in to your portal", url: clientUrl("/sign-in") } : undefined,
+      button: password
+        ? { label: onboarding ? "Sign in and get started" : "Sign in to your portal", url: onboarding ? clientUrl(`/sign-in?callbackUrl=${encodeURIComponent("/onboarding")}`) : clientUrl("/sign-in") }
+        : undefined,
     }),
   });
 
@@ -104,6 +113,8 @@ export const emailClientAdded = quietly(async (client: IClient, actor: IUser, pa
 // The team gave an existing client a portal login, or set a new password for theirs: the
 // client gets the email to sign in with and the password.
 export const emailPortalLogin = quietly(async (client: IClient, password: string, created: boolean) => {
+  // A first login for a client with onboarding still to do: ask for it, as the welcome does.
+  const onboarding = created && onboardingDue(client);
   await sendEmail({
     to: client.email,
     ...activityEmail({
@@ -114,12 +125,15 @@ export const emailPortalLogin = quietly(async (client: IClient, password: string
       body: created
         ? "Your BayShore team set up your client portal. Sign in with the details below. Please keep your password private."
         : "Your BayShore team set a new password for your client portal. Sign in with the details below. If you didn't ask for this, reply to this email.",
+      list: onboarding ? onboardingSteps(client) : undefined,
       details: [
         ["Company", client.companyName],
         ["Sign-in email", client.email],
         ["Password", password],
       ],
-      button: { label: "Sign in to your portal", url: clientUrl("/sign-in") },
+      button: onboarding
+        ? { label: "Sign in and get started", url: clientUrl(`/sign-in?callbackUrl=${encodeURIComponent("/onboarding")}`) }
+        : { label: "Sign in to your portal", url: clientUrl("/sign-in") },
     }),
   });
 });

@@ -6,17 +6,26 @@ import {
   getOnboardingRequest,
   listOnboardingRequests,
   removeMyOnboardingMedia,
+  updateClientOnboarding,
+  revealClientOnboardingPassword,
+  uploadClientOnboardingMedia,
+  removeClientOnboardingMedia,
   startOnboarding,
   updateMyOnboarding,
   updateOnboarding,
   uploadMyOnboardingMedia,
 } from "../controllers/onboarding.controller";
-import { onboardingMediaUpload } from "../middleware/upload";
+import { addMyOnboardingComment, addOnboardingComment, listMyOnboardingComments, listOnboardingComments, replyToOnboardingComment } from "../controllers/onboardingComment.controller";
+import { commentUpload, onboardingMediaUpload } from "../middleware/upload";
 import { protect, authorize } from "../middleware/auth";
 import { validate } from "../middleware/validate";
-import type { UserRole } from "../models/user.model";
+import { USER_ROLES, type UserRole } from "../models/user.model";
 import {
+  addOnboardingCommentRules,
+  answerRules,
   listOnboardingRequestsRules,
+  onboardingCommentsClientRule,
+  replyOnboardingCommentRules,
   onboardingIdRule,
   onboardingKeyRule,
   onboardingMediaKindRule,
@@ -26,6 +35,9 @@ import {
 } from "../validators/onboarding.validator";
 
 const router = Router();
+
+// Everyone on the team: who may reply is decided by who can see the client (utils/clientAccess).
+const STAFF_ROLES = USER_ROLES.filter((role) => role !== "client") as UserRole[];
 
 // Who on the team sees the onboardings that come in: the roles that manage clients. (A new
 // onboarding has no account manager or team yet, so it can't be shown by assignment.)
@@ -270,6 +282,168 @@ router.patch("/me", protect, authorize("client"), updateOnboardingRules, validat
  */
 router.post("/me/media/:kind", protect, authorize("client"), onboardingMediaKindRule, validate, onboardingMediaUpload, uploadMyOnboardingMedia);
 router.delete("/me/media/:kind", protect, authorize("client"), onboardingMediaKindRule, removeOnboardingMediaRules, validate, removeMyOnboardingMedia);
+
+/**
+ * @swagger
+ * /onboarding/me/comments:
+ *   get:
+ *     summary: The signed-in client's comments on their onboarding form, with the team's replies
+ *     description: Oldest first. Each has its `step` (contact, web, domain, email, logo, google, social or media), its text and files, and `replies` from the team.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: The comments
+ *   post:
+ *     summary: Comment on a step of the signed-in client's onboarding form
+ *     description: A multipart form with `step`, `text` (up to 1000 characters) and files under `files` (up to 5; images, videos or documents). Text, files, or both.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       201:
+ *         description: The comment
+ *       422:
+ *         description: No step, no text and no file, or a file of the wrong type or size
+ */
+router.get("/me/comments", protect, authorize("client"), listMyOnboardingComments);
+router.post("/me/comments", protect, authorize("client"), commentUpload, addOnboardingCommentRules, validate, addMyOnboardingComment);
+
+/**
+ * @swagger
+ * /onboarding/clients/{clientId}/comments:
+ *   get:
+ *     summary: Staff — a client's comments on their onboarding form, with the replies
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: The comments
+ *       404:
+ *         description: No such client, or one the caller can't see
+ *   post:
+ *     summary: Staff — comment on a step of a client's onboarding form
+ *     description: A multipart form with `step`, `text` (up to 1000 characters) and files under `files` (up to 5). The client sees it on that step of their form, from the team.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       201:
+ *         description: The comment
+ *       404:
+ *         description: No such client, or one the caller can't see
+ * /onboarding/clients/{clientId}/comments/{commentId}/replies:
+ *   post:
+ *     summary: Staff — reply to a client's comment on their onboarding form
+ *     description: A multipart form with `text` (up to 1000 characters) and files under `files` (up to 5). Text, files, or both.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       201:
+ *         description: The comment, with the reply under it
+ *       404:
+ *         description: No such client or comment
+ */
+/**
+ * @swagger
+ * /onboarding/clients/{clientId}:
+ *   patch:
+ *     summary: Staff — fill in or correct a client's onboarding answers
+ *     description: The same `answers` sections as the client's own form. A section sent replaces the one stored; one left out is untouched. A stored password is kept unless a new `loginPassword` is sent, and uploaded files stay. It doesn't start or hand in the client's onboarding.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: The client's onboarding, without passwords
+ *       404:
+ *         description: No such client, or one the caller can't see
+ */
+router.patch("/clients/:clientId", protect, authorize(...CAN_MANAGE), onboardingCommentsClientRule, answerRules, validate, updateClientOnboarding);
+
+/**
+ * @swagger
+ * /onboarding/clients/{clientId}/password:
+ *   get:
+ *     summary: Staff (managers) — read one password a client shared on their onboarding form
+ *     description: "`login` is where it is kept: domain, hosting, cms, or an account such as google.ads or social.instagram. Opened only on request; the client's record never carries it readable."
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: The password
+ *       404:
+ *         description: No such client, or no password saved there
+ */
+/**
+ * @swagger
+ * /onboarding/clients/{clientId}/media/{kind}:
+ *   post:
+ *     summary: Staff (managers) — upload files for a client's onboarding (logo, style references, photos, videos)
+ *     description: The same as the client's own upload — a multipart form with the files under `files`, the same types, sizes and limits.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       201:
+ *         description: The files now stored for that kind
+ *   delete:
+ *     summary: Staff (managers) — remove one of a client's uploaded files
+ *     description: Send the file's `url` in the body.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: The files left for that kind
+ */
+router.post(
+  "/clients/:clientId/media/:kind",
+  protect,
+  authorize(...CAN_MANAGE),
+  onboardingCommentsClientRule,
+  onboardingMediaKindRule,
+  validate,
+  onboardingMediaUpload,
+  uploadClientOnboardingMedia
+);
+router.delete(
+  "/clients/:clientId/media/:kind",
+  protect,
+  authorize(...CAN_MANAGE),
+  onboardingCommentsClientRule,
+  onboardingMediaKindRule,
+  removeOnboardingMediaRules,
+  validate,
+  removeClientOnboardingMedia
+);
+
+router.get("/clients/:clientId/password", protect, authorize(...CAN_MANAGE), onboardingCommentsClientRule, validate, revealClientOnboardingPassword);
+
+router.get("/clients/:clientId/comments", protect, authorize(...STAFF_ROLES), onboardingCommentsClientRule, validate, listOnboardingComments);
+router.post(
+  "/clients/:clientId/comments",
+  protect,
+  authorize(...STAFF_ROLES),
+  commentUpload,
+  onboardingCommentsClientRule,
+  addOnboardingCommentRules,
+  validate,
+  addOnboardingComment
+);
+router.post(
+  "/clients/:clientId/comments/:commentId/replies",
+  protect,
+  authorize(...STAFF_ROLES),
+  commentUpload,
+  replyOnboardingCommentRules,
+  validate,
+  replyToOnboardingComment
+);
 
 router.get("/:id", onboardingIdRule, onboardingKeyRule, validate, getOnboarding);
 router.patch("/:id", onboardingIdRule, onboardingKeyRule, updateOnboardingRules, validate, updateOnboarding);

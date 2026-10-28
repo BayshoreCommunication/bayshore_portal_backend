@@ -335,6 +335,16 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   if (details !== undefined) client.set("details", details);
   applyShared(client, req.body.shared);
   applyControls(client, req.body.onboardingControls);
+  // The client's requests the team answered on the form: added as a service, or set aside.
+  for (const [list, status] of [["serviceRequestsAdded", "added"], ["serviceRequestsDismissed", "dismissed"]] as const) {
+    const ids: unknown = req.body[list];
+    if (!Array.isArray(ids)) continue;
+    for (const request of client.serviceRequests) if (ids.includes(String(request._id))) request.status = status;
+  }
+  // …and one whose service is on the client now, by its name, is answered too.
+  const named = (name: string) => name.trim().toLowerCase();
+  const onRecord = new Set([...(client.details?.services ?? []).map((plan) => named(plan.name)), ...(client.serviceTypes ?? []).map(named)]);
+  for (const request of client.serviceRequests) if (request.status === "open" && onRecord.has(named(request.name))) request.status = "added";
   if (accountManager !== undefined) client.accountManager = accountManager || undefined;
   if (team !== undefined) client.team = team;
 

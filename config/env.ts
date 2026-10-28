@@ -57,6 +57,12 @@ export const env = {
   clientPortalUrl: (process.env.CLIENT_PORTAL_URL || "http://localhost:3001").replace(/\/+$/, ""),
   // Where the team's portal lives — the buttons in emails to the team lead here.
   companyPortalUrl: (process.env.COMPANY_PORTAL_URL || "http://localhost:3000").replace(/\/+$/, ""),
+  // Where a client books their onboarding call: a Google Calendar appointment schedule. The
+  // client portal shows the same one (client-portal: lib/booking.ts).
+  bookingUrl: (
+    process.env.BOOKING_URL ||
+    "https://calendar.google.com/calendar/appointments/schedules/AcZssZ3xiwhgZG7-JPeXm3m_pZVueFOj54UnDfxT_JWB3ixQ5v88SIsI-coqD6knMrZzf4k38WzCDkU2"
+  ).trim(),
   // Optional at boot: without them the API runs, and checkout answers 503.
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || "",

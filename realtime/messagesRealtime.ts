@@ -62,6 +62,12 @@ export const emitNewMessage = (clientId: string, message: unknown) => {
   io?.to(ALL_CLIENTS_ROOM).to(clientRoom(clientId)).emit("messages:new", message);
 };
 
+// Something about one client — to everyone who may hear that client (its logins, and the staff
+// who can see it). E.g. a new comment on its onboarding form.
+export const emitToClient = (clientId: string, event: string, payload: unknown) => {
+  io?.to(ALL_CLIENTS_ROOM).to(clientRoom(clientId)).emit(event, payload);
+};
+
 // Something for particular people, wherever they are connected — e.g. "you have a new notification".
 export const emitToUsers = (userIds: string[], event: string, payload: unknown) => {
   if (!io || userIds.length === 0) return;

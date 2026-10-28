@@ -16,6 +16,7 @@ const REFRESH_REUSE_GRACE_MS = 2 * 60 * 1000;
 import { env } from "../config/env";
 import { CLIENT_NOT_ALLOWED_MESSAGE, clientMaySignIn } from "../utils/clientLogin";
 import { logAudit } from "../utils/audit";
+import { emailOnboardingWelcome } from "../utils/onboardingEmails";
 
 const failedLogin = (identifier: string, reason: string, user?: IUser) =>
   logAudit({
@@ -176,6 +177,9 @@ export const clientSignup = asyncHandler(async (req: Request, res: Response) => 
     await user.deleteOne();
     throw error;
   }
+
+  // Not waited for: the account is made whether or not the email goes.
+  void emailOnboardingWelcome(client);
 
   return ApiResponse(res, 201, "Account created successfully", { user });
 });

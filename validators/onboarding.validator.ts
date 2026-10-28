@@ -1,6 +1,7 @@
 import { body, header, param, query, type ValidationChain } from "express-validator";
 import { ONBOARDING_STATUSES, ONBOARDING_UPLOAD_KINDS } from "../models/client.model";
 import { PHONE_REGEX } from "../models/user.model";
+import { ONBOARDING_COMMENT_MAX_LENGTH, ONBOARDING_COMMENT_STEPS } from "../models/onboardingComment.model";
 import { normalizePhone } from "../utils/phone";
 
 // The parts of a client's onboarding answers, as they are named on the client record
@@ -20,7 +21,7 @@ export const onboardingKeyRule: ValidationChain[] = [
 // The form's answers come under `answers`, apart from who is answering — the form has an
 // "email" section of its own (their business email), which is not the contact's email.
 // What is inside each section is checked by the client model itself (its enums and lengths).
-const answerRules: ValidationChain[] = [
+export const answerRules: ValidationChain[] = [
   body("answers").optional().isObject().withMessage("answers must be an object"),
   ...ONBOARDING_SECTIONS.map((section) => body(`answers.${section}`).optional().isObject().withMessage(`answers.${section} must be an object`)),
   body("submit").optional().isBoolean().withMessage("submit must be true or false").toBoolean(),
@@ -62,4 +63,27 @@ export const listOnboardingRequestsRules: ValidationChain[] = [
   query("status").optional().isIn(ONBOARDING_STATUSES).withMessage(`status must be one of: ${ONBOARDING_STATUSES.join(", ")}`),
   query("page").optional().isInt({ min: 1 }).toInt(),
   query("limit").optional().isInt({ min: 1, max: 100 }).toInt(),
+];
+
+// ── Comments on the onboarding form ──────────────────────────────────────────
+
+const commentTextRule = body("text")
+  .optional()
+  .isString()
+  .withMessage("text must be text")
+  .trim()
+  .isLength({ max: ONBOARDING_COMMENT_MAX_LENGTH })
+  .withMessage(`A comment cannot exceed ${ONBOARDING_COMMENT_MAX_LENGTH} characters`);
+
+export const addOnboardingCommentRules: ValidationChain[] = [
+  body("step").isIn(ONBOARDING_COMMENT_STEPS).withMessage(`step must be one of: ${ONBOARDING_COMMENT_STEPS.join(", ")}`),
+  commentTextRule,
+];
+
+export const onboardingCommentsClientRule: ValidationChain[] = [param("clientId").isMongoId().withMessage("Invalid client id")];
+
+export const replyOnboardingCommentRules: ValidationChain[] = [
+  ...onboardingCommentsClientRule,
+  param("commentId").isMongoId().withMessage("Invalid comment id"),
+  commentTextRule,
 ];

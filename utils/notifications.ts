@@ -58,6 +58,7 @@ const staffOn = async (content: IContent, except?: Id) => {
 const EMAIL_LOOK: Record<NotificationType, { eyebrow: string; tone: EmailTone; button: string }> = {
   content_sent: { eyebrow: "Needs your approval", tone: "action", button: "Review the content" },
   content_resubmitted: { eyebrow: "Updated for you", tone: "action", button: "Review the changes" },
+  onboarding_comment: { eyebrow: "Onboarding comment", tone: "info", button: "Open the onboarding" },
   content_comment: { eyebrow: "New reply", tone: "info", button: "Read the reply" },
   content_feedback: { eyebrow: "Client feedback", tone: "alert", button: "Open the piece" },
   content_approved: { eyebrow: "Approved", tone: "success", button: "Open the piece" },
@@ -315,3 +316,43 @@ export const notifyProjectCreated = quietly(async (project: IProject, actor: IUs
 export const forgetContentNotifications = quietly(async (contentId: Id) => {
   await Notification.deleteMany({ content: contentId });
 });
+
+// ── Comments on the onboarding form ──────────────────────────────────────────
+
+// A comment (or a reply) on a step of the client's onboarding form, to the other side: from the
+// client, to the staff on them; from the team, to the client's logins. Their bell updates at once.
+export const notifyOnboardingComment = quietly(
+  async (clientId: Id, actor: IUser, input: { side: "client" | "team"; step: string; text?: string; attachments: number; reply?: boolean }) => {
+    const client = await Client.findById(clientId).select("companyName accountManager team createdBy").lean();
+    const company = client?.companyName ?? "A client";
+    let recipients: Id[];
+    if (input.side === "client") {
+      const ids = [...new Set([client?.accountManager, ...(client?.team ?? []), client?.createdBy].filter((id): id is Id => Boolean(id)).map(String))].filter((id) => id !== String(actor._id));
+      recipients = await User.find({ _id: { $in: ids }, status: "active", role: { $ne: "client" } }).distinct("_id");
+      // Nobody on the client yet (one who signed up themselves): those who manage clients hear it.
+      if (!recipients.length) recipients = await User.find({ role: { $in: ["manager", "admin", "superadmin"] }, status: "active" }).distinct("_id");
+    } else {
+      recipients = (await clientLoginsOf(clientId)).filter((id) => String(id) !== String(actor._id));
+    }
+    if (!recipients.length) return;
+
+    const title =
+      input.side === "client"
+        ? `${company} ${input.reply ? "replied" : "commented"} on their onboarding`
+        : `${actor.fullName} ${input.reply ? "replied to your comment" : "commented"} on your onboarding`;
+    await Notification.insertMany(
+      recipients.map((recipient) => ({
+        recipient,
+        type: "onboarding_comment" as const,
+        title: clip(title, NOTIFICATION_TITLE_MAX_LENGTH),
+        body: clip(`${input.step} — ${excerptOf(input.text, input.attachments)}`, NOTIFICATION_BODY_MAX_LENGTH),
+        link: input.side === "client" ? `/clients/${clientId}/onboarding` : "/onboarding",
+        actor: actor._id,
+        actorName: actor.fullName,
+        client: clientId,
+        pieces: 1,
+      }))
+    );
+    emitToUsers(recipients.map(String), "notifications:new", { type: "onboarding_comment", client: String(clientId) });
+  }
+);

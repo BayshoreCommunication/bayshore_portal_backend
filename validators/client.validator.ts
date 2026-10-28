@@ -63,7 +63,8 @@ export const createClientRules: ValidationChain[] = [
   body("contactName").trim().notEmpty().withMessage("Client name is required"),
   body("companyName").trim().notEmpty().withMessage("Company name is required"),
   body("email").trim().isEmail().withMessage("A valid email address is required"),
-  body("serviceTypes").isArray({ min: 1 }).withMessage("Select at least one service type"),
+  // A client can be saved before their services are chosen.
+  body("serviceTypes").optional().isArray().withMessage("serviceTypes must be a list"),
   body("startDate").isISO8601().withMessage("Start date must be a valid date"),
   // Only for a client who gets a portal login: without one, no login is made.
   body("password")
@@ -78,7 +79,7 @@ export const updateClientRules: ValidationChain[] = [
   body("contactName").optional().trim().notEmpty().withMessage("Client name cannot be empty"),
   body("companyName").optional().trim().notEmpty().withMessage("Company name cannot be empty"),
   body("email").optional().trim().isEmail().withMessage("Please enter a valid email address"),
-  body("serviceTypes").optional().isArray({ min: 1 }).withMessage("Select at least one service type"),
+  body("serviceTypes").optional().isArray().withMessage("serviceTypes must be a list"),
   body("startDate").optional().isISO8601().withMessage("Start date must be a valid date"),
   // Sending a password resets the existing portal login, or creates one for a client that
   // was originally added without portal access.

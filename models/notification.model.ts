@@ -30,6 +30,8 @@ export const NOTIFICATION_TYPES = [
   "message",
   "report_published",
   "project_created",
+  // A comment (or a reply) on the client's onboarding form — to the other side.
+  "onboarding_comment",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 

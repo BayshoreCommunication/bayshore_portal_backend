@@ -161,3 +161,23 @@ export const announceRevisionRequested = (content: IContent, actor: IUser, text:
 // The team sent the revised piece back for approval, with their note if they left one.
 export const announceRevisionSubmitted = (content: IContent, actor: IUser, note: string | undefined, revision: number | undefined) =>
   announce(content, actor, { kind: "revision_submitted", text: note, revision });
+
+// A comment on a step of the client's onboarding form, in their conversation too — where it
+// happened in time. Its notification goes out on its own (notifyOnboardingComment), so this adds
+// none; and like the other automatic messages, it never fails the comment it reports.
+export const announceOnboardingComment = async (clientId: Id, actor: IUser, step: string, text: string, attachments: IContentFile[]) => {
+  try {
+    const message = await Message.create({
+      client: clientId,
+      kind: "text",
+      side: sideOf(actor),
+      sender: actor._id,
+      senderName: actor.fullName,
+      text: `On the onboarding form · ${step}${text ? `\n\n${text}` : ""}`,
+      attachments,
+    });
+    emitNewMessage(String(message.client), message.toJSON());
+  } catch (error) {
+    console.error("Automatic message failed:", error);
+  }
+};

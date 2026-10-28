@@ -1,5 +1,6 @@
 import { Router } from "express";
 import {
+  requestMyService,
   listServices,
   getService,
   createService,
@@ -165,6 +166,8 @@ router.post("/", protect, authorize(...SERVICE_MANAGE_ROLES), createServiceRules
  *         description: Not a client account
  */
 router.get("/me", protect, authorize("client"), listMyServices);
+// The client asks for a service: kept for the team, and sent to their conversation.
+router.post("/me/requests", protect, authorize("client"), requestMyService);
 
 /**
  * @swagger

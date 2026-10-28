@@ -9,6 +9,7 @@ import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
 import { canAccessClient, visibleClientFilter } from "../utils/clientAccess";
 import { planFromCatalog } from "../utils/clientServices";
+import { postMessage } from "../utils/messages";
 
 type SubServiceInput = { _id?: string; name: string; price: number };
 
@@ -243,15 +244,51 @@ export const listMyServices = asyncHandler(async (req: Request, res: Response) =
   const clientId = req.user!.client;
   if (!clientId) throw new ApiError(403, "This account is not linked to a client");
 
-  const [taken, client] = await Promise.all([clientServicesOf(clientId, true), Client.findById(clientId).select("details.services serviceTypes").lean()]);
-  const plans = (client?.details?.services ?? []).map(({ name, fields, monthly, included }) => ({ name, fields, monthly, included }));
-  const unpriced = (client?.serviceTypes ?? []).filter((name) => !plans.some((plan) => plan.name === name));
+  const [taken, client] = await Promise.all([
+    clientServicesOf(clientId, true),
+    Client.findById(clientId).select("details.services details.business.logoDesign details.business.hasLogo onboarding.logo.has serviceTypes serviceRequests").lean(),
+  ]);
+  // Paid each month: the services on the record, but for a custom one paid once (below).
+  const recorded = client?.details?.services ?? [];
+  const plans = recorded.filter((plan) => !(plan.custom && !plan.monthly && plan.oneTime)).map(({ name, fields, monthly, included, custom }) => ({ name, fields, monthly, included, custom }));
+  // Never priced: not on the record at all (a one-time custom is on it, and is listed below).
+  const unpriced = (client?.serviceTypes ?? []).filter((name) => !recorded.some((plan) => plan.name === name));
+
+  // Paid once, not each month: a logo designed for a client who has none, when the team added it
+  // (company portal: the client form → business → logo design). Whether they have a logo is the
+  // onboarding's answer, or what was on the record before it.
+  const logoDesign = client?.details?.business?.logoDesign;
+  const hasLogo = client?.onboarding?.logo?.has ? client.onboarding.logo.has === "yes" : client?.details?.business?.hasLogo;
+  const oneTime = [
+    ...(hasLogo === false && logoDesign?.add
+      ? [{ name: "Logo design", price: logoDesign.price ?? 0, detail: logoDesign.concepts ? `${logoDesign.concepts} concept${logoDesign.concepts === 1 ? "" : "s"}` : undefined }]
+      : []),
+    // The team's own services that are paid once.
+    ...recorded
+      .filter((plan) => plan.custom && plan.oneTime)
+      .map((plan) => ({
+        name: plan.name,
+        price: plan.oneTime ?? 0,
+        // When it is due, and how long it takes.
+        detail:
+          [
+            plan.deadline ? `due ${new Date(`${plan.deadline}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}` : "",
+            plan.duration ?? "",
+          ]
+            .filter(Boolean)
+            .join(" · ") || undefined,
+      })),
+  ];
 
   return ApiResponse(res, 200, "Services fetched successfully", {
     ...taken,
     plans,
     unpriced,
     planTotal: plans.reduce((sum, plan) => sum + plan.monthly, 0),
+    // What they asked for and haven't been answered on, or have been (added as a service).
+    requests: (client?.serviceRequests ?? []).filter((request) => request.status !== "dismissed").map(({ name, status, requestedAt }) => ({ name, status, requestedAt })),
+    oneTime,
+    oneTimeTotal: oneTime.reduce((sum, item) => sum + item.price, 0),
   });
 });
 
@@ -260,4 +297,30 @@ export const listMyServices = asyncHandler(async (req: Request, res: Response) =
 export const listCatalogForClient = asyncHandler(async (_req: Request, res: Response) => {
   const services = await Service.find().sort({ createdAt: 1, _id: 1 }).select("title description plan color subServices monthlyPrice").lean();
   return ApiResponse(res, 200, "Services fetched successfully", { services });
+});
+
+// POST /services/me/requests — the client asks for a service (or something else, `service`
+// left out). It is kept on their record for the team, and goes to their conversation too.
+export const requestMyService = asyncHandler(async (req: Request, res: Response) => {
+  const clientId = req.user!.client;
+  if (!clientId) throw new ApiError(403, "This account is not linked to a client");
+  const client = await Client.findById(clientId);
+  if (!client) throw new ApiError(404, "Client not found");
+
+  const name = typeof req.body.service === "string" && req.body.service.trim() ? req.body.service.trim() : "Something else";
+  const note = typeof req.body.note === "string" ? req.body.note.trim().slice(0, 300) : "";
+  // Asking again for one still open doesn't make a second.
+  if (!client.serviceRequests.some((request) => request.name === name && request.status === "open")) {
+    client.serviceRequests.push({ name, note: note || undefined, status: "open", requestedAt: new Date() } as never);
+    await client.save();
+  }
+
+  await postMessage(req.user!, {
+    client: client._id,
+    text: `Service request: ${name}\n\n${note || `I'd like to request ${name}. Please review my business and send me a plan and a quote.`}`,
+  }).catch(() => undefined);
+
+  return ApiResponse(res, 201, "Request sent", {
+    requests: client.serviceRequests.filter((request) => request.status !== "dismissed").map(({ name: requested, status, requestedAt }) => ({ name: requested, status, requestedAt })),
+  });
 });

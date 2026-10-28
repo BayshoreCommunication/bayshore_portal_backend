@@ -67,15 +67,19 @@ export type ActivityEmail = {
   body?: string;
   // Facts about it, one per row: "Company — Carter Injury Law".
   details?: [label: string, value: string | undefined][];
+  // A short list under a heading: the steps to take, or what will happen. Numbered when `numbered`.
+  list?: { title: string; items: string[]; numbered?: boolean };
   // The button, and where it leads. Without one, the email is only news.
   button?: { label: string; url: string };
+  // A second, quieter way on, as a link under the button.
+  link?: { label: string; url: string };
   audience?: EmailAudience;
 };
 
 // Every email the portals send, in one look: a dark band with the name, a gold rule, a small
 // coloured label, the headline, a line about it, the facts in a box, one button — and why it
 // was sent. Tables and inline styles only, the way email clients need them.
-export const activityEmail = ({ name, title, eyebrow, tone = "action", body, details = [], button, audience = "client" }: ActivityEmail): Omit<Email, "to"> => {
+export const activityEmail = ({ name, title, eyebrow, tone = "action", body, details = [], list, button, link, audience = "client" }: ActivityEmail): Omit<Email, "to"> => {
   const firstName = name.trim().split(/\s+/)[0] || "there";
   const rows = details.filter((row): row is [string, string] => Boolean(row[1]?.trim()));
   const colors = TONES[tone];
@@ -91,7 +95,9 @@ export const activityEmail = ({ name, title, eyebrow, tone = "action", body, det
     title,
     ...(body ? ["", body] : []),
     ...(rows.length ? ["", ...rows.map(([label, value]) => `${label}: ${value}`)] : []),
+    ...(list?.items.length ? ["", `${list.title}:`, ...list.items.map((item, index) => `${list.numbered ? `${index + 1}.` : "-"} ${item}`)] : []),
     ...(button ? ["", `${button.label}: ${button.url}`] : []),
+    ...(link ? [`${link.label}: ${link.url}`] : []),
     "",
     `— ${BRAND}`,
     "",
@@ -153,10 +159,32 @@ export const activityEmail = ({ name, title, eyebrow, tone = "action", body, det
                 : ""
             }
             ${
+              list?.items.length
+                ? `<tr>
+              <td style="padding:22px 30px 0;">
+                <p style="margin:0 0 10px;font-size:12px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#6b7280;">${escapeHtml(list.title)}</p>
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                  ${list.items
+                    .map(
+                      (item, index) => `<tr>
+                    <td width="30" style="padding:0 0 10px;vertical-align:top;">
+                      <span style="display:inline-block;width:22px;height:22px;line-height:22px;border-radius:999px;background:#fbf3e2;color:#9a6b12;font-size:12px;font-weight:700;text-align:center;">${list.numbered ? index + 1 : "&#10003;"}</span>
+                    </td>
+                    <td style="padding:2px 0 10px;font-size:14px;line-height:1.55;color:#374151;vertical-align:top;">${escapeHtml(item)}</td>
+                  </tr>`
+                    )
+                    .join("")}
+                </table>
+              </td>
+            </tr>`
+                : ""
+            }
+            ${
               button
                 ? `<tr>
               <td style="padding:26px 30px 6px;">
                 <a href="${escapeHtml(button.url)}" style="display:inline-block;background:#0b1522;color:#ffffff;text-decoration:none;font-size:14.5px;font-weight:600;padding:13px 24px;border-radius:10px;">${escapeHtml(button.label)} &rarr;</a>
+                ${link ? `<p style="margin:14px 0 0;font-size:13.5px;line-height:1.6;color:#6b7280;"><a href="${escapeHtml(link.url)}" style="color:#2f5fd8;font-weight:600;text-decoration:none;">${escapeHtml(link.label)} &rarr;</a></p>` : ""}
               </td>
             </tr>
             <tr>

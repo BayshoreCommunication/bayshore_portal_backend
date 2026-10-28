@@ -3,6 +3,7 @@ import { env } from "./config/env";
 import { connectDB } from "./config/db";
 import { createServer } from "http";
 import { initializeMessagesRealtime } from "./realtime/messagesRealtime";
+import { startOnboardingReminders } from "./utils/onboardingEmails";
 
 const start = async () => {
   try {
@@ -10,6 +11,8 @@ const start = async () => {
 
     const server = createServer(app);
     initializeMessagesRealtime(server);
+    // Reminds new clients to book their onboarding call (utils/onboardingEmails.ts).
+    startOnboardingReminders();
     server.listen(env.port, () => {
       const baseUrl = `http://localhost:${env.port}`;
       const divider = "-".repeat(50);
