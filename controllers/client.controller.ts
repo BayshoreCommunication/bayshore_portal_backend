@@ -6,10 +6,10 @@ import { RefreshToken } from "../models/refreshToken.model";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
-import { deleteFromSpaces } from "../utils/uploadToSpaces";
 import { clientScopeFor as scopeFor } from "../utils/clientAccess";
 import { emailClientAdded, emailPortalLogin } from "../utils/activityEmails";
 import { unseal } from "../utils/secretBox";
+import { removeClientData } from "../utils/clientCleanup";
 
 // The roles that manage clients — the only ones shown a client's portal password.
 const CAN_SEE_PASSWORD: string[] = ["assistant_manager", "manager", "admin", "superadmin"];
@@ -398,15 +398,8 @@ export const deleteClient = asyncHandler(async (req: Request, res: Response) => 
   const requester = req.user!;
   const client = await findVisibleClient(requester, req.params.id);
 
-  const users = await User.find({ client: client._id }).select("avatar");
-  const userIds = users.map((user) => user._id);
-
-  await User.deleteMany({ client: client._id });
-  await RefreshToken.deleteMany({ user: { $in: userIds } });
-  await client.deleteOne();
-
-  // Best effort — an unreachable file store shouldn't fail the delete.
-  await Promise.allSettled(users.map((user) => deleteFromSpaces(user.avatar)));
+  // The client and everything kept for it: logins, content, comments, messages, files…
+  await removeClientData([client._id]);
 
   return ApiResponse(res, 200, "Client deleted successfully");
 });

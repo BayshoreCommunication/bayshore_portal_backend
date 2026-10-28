@@ -354,5 +354,34 @@ export const notifyOnboardingComment = quietly(
       }))
     );
     emitToUsers(recipients.map(String), "notifications:new", { type: "onboarding_comment", client: String(clientId) });
+
+    // And by email, every time: the client with a button into their onboarding, the team into
+    // the client's onboarding page.
+    if (!emailReady) return;
+    const audience = input.side === "client" ? "team" : "client";
+    const look = EMAIL_LOOK.onboarding_comment;
+    const url = audience === "client" ? `${env.clientPortalUrl}/onboarding` : `${env.companyPortalUrl}/clients/${clientId}/onboarding`;
+    const people = await User.find({ _id: { $in: recipients }, email: { $nin: [null, ""] } }).select("fullName email").lean();
+    await Promise.all(
+      people.map((person) =>
+        sendEmail({
+          to: person.email as string,
+          ...activityEmail({
+            name: person.fullName,
+            title,
+            body: excerptOf(input.text, input.attachments),
+            eyebrow: look.eyebrow,
+            tone: look.tone,
+            details: [
+              ["Step", input.step],
+              ["From", input.side === "client" ? company : actor.fullName],
+              ["Client", audience === "team" ? company : undefined],
+            ],
+            button: { label: look.button, url },
+            audience,
+          }),
+        })
+      )
+    );
   }
 );
