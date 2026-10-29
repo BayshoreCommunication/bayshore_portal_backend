@@ -342,6 +342,9 @@ export interface IServiceRequest {
   requestedAt: Date;
 }
 
+export const CLIENT_SERVICE_PLAN_STATUSES = ["active", "done"] as const;
+export type ClientServicePlanStatus = (typeof CLIENT_SERVICE_PLAN_STATUSES)[number];
+
 export interface IClientServicePlan {
   name: string;
   // The quantities and prices, each under its label on the form.
@@ -359,6 +362,12 @@ export interface IClientServicePlan {
   // For one paid once: when it is due (yyyy-mm-dd), and/or how long it takes ("2 weeks").
   deadline?: string;
   duration?: string;
+  // "done" once the work is finished: kept as history, no longer billed or counted. Missing is
+  // still running.
+  status?: ClientServicePlanStatus;
+  // When it was first put on the client, and when it was marked done (set by the backend).
+  addedAt?: Date;
+  doneAt?: Date;
 }
 
 export interface IClientDetails {
@@ -916,6 +925,9 @@ const clientServicePlanSchema = new Schema<IClientServicePlan>(
     oneTime: { ...amountField, default: 0 },
     deadline: shortText,
     duration: shortText,
+    status: { type: String, enum: CLIENT_SERVICE_PLAN_STATUSES },
+    addedAt: { type: Date },
+    doneAt: { type: Date },
   },
   { _id: false }
 );

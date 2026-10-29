@@ -10,6 +10,7 @@ import { ApiError } from "../utils/ApiError";
 import { canAccessClient, visibleClientFilter } from "../utils/clientAccess";
 import { planFromCatalog } from "../utils/clientServices";
 import { postMessage } from "../utils/messages";
+import { notifyServicesUpdated, type ServiceChanges } from "../utils/notifications";
 
 type SubServiceInput = { _id?: string; name: string; price: number };
 
@@ -220,15 +221,25 @@ export const setClientServices = asyncHandler(async (req: Request, res: Response
   const kept = new Set(planned.map(({ service }) => String(service._id)));
 
   const existing = await ClientService.find({ client: clientId });
+  // What changed, for the client's notification.
+  const changes: ServiceChanges = { added: [], done: [], changed: [], removed: [] };
 
   for (const { service, subServices } of planned) {
-    const assignment = existing.find((entry) => String(entry.service) === String(service._id)) ?? new ClientService({ client: clientId, service: service._id });
+    const found = existing.find((entry) => String(entry.service) === String(service._id));
+    const assignment = found ?? new ClientService({ client: clientId, service: service._id });
+    const idsOf = (items: { subService: unknown }[]) => items.map((item) => String(item.subService)).sort().join();
+    if (!found) changes.added.push(service.title);
+    else if (idsOf(found.subServices) !== idsOf(subServices)) changes.changed.push(service.title);
     assignment.subServices = subServices;
     if (assignment.isNew || assignment.isModified()) await assignment.save();
   }
+  const titles = new Map((await Service.find({ _id: { $in: existing.map((entry) => entry.service) } }).select("title").lean()).map((service) => [String(service._id), service.title]));
   for (const assignment of existing) {
-    if (!kept.has(String(assignment.service))) await assignment.deleteOne();
+    if (kept.has(String(assignment.service))) continue;
+    changes.removed.push(titles.get(String(assignment.service)) ?? "A service");
+    await assignment.deleteOne();
   }
+  await notifyServicesUpdated(new mongoose.Types.ObjectId(clientId), req.user!, changes);
 
   return ApiResponse(res, 200, "Client services saved successfully", await clientServicesOf(clientId, false));
 });
@@ -248,11 +259,18 @@ export const listMyServices = asyncHandler(async (req: Request, res: Response) =
     clientServicesOf(clientId, true),
     Client.findById(clientId).select("details.services details.business.logoDesign details.business.hasLogo onboarding.logo.has serviceTypes serviceRequests").lean(),
   ]);
+  // Running now: what is billed. Finished ones (marked done by the team) are their history.
+  const all = client?.details?.services ?? [];
+  const recorded = all.filter((plan) => plan.status !== "done");
+  const paidOnce = (plan: (typeof all)[number]) => Boolean(plan.custom && !plan.monthly && plan.oneTime);
+  const dayOf = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+
   // Paid each month: the services on the record, but for a custom one paid once (below).
-  const recorded = client?.details?.services ?? [];
-  const plans = recorded.filter((plan) => !(plan.custom && !plan.monthly && plan.oneTime)).map(({ name, fields, monthly, included, custom }) => ({ name, fields, monthly, included, custom }));
+  const plans = recorded
+    .filter((plan) => !paidOnce(plan))
+    .map(({ name, fields, monthly, included, custom, addedAt }) => ({ name, fields, monthly, included, custom, addedAt }));
   // Never priced: not on the record at all (a one-time custom is on it, and is listed below).
-  const unpriced = (client?.serviceTypes ?? []).filter((name) => !recorded.some((plan) => plan.name === name));
+  const unpriced = (client?.serviceTypes ?? []).filter((name) => !all.some((plan) => plan.name === name));
 
   // Paid once, not each month: a logo designed for a client who has none, when the team added it
   // (company portal: the client form → business → logo design). Whether they have a logo is the
@@ -270,15 +288,24 @@ export const listMyServices = asyncHandler(async (req: Request, res: Response) =
         name: plan.name,
         price: plan.oneTime ?? 0,
         // When it is due, and how long it takes.
-        detail:
-          [
-            plan.deadline ? `due ${new Date(`${plan.deadline}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}` : "",
-            plan.duration ?? "",
-          ]
-            .filter(Boolean)
-            .join(" · ") || undefined,
+        detail: [plan.deadline ? `due ${dayOf(plan.deadline)}` : "", plan.duration ?? ""].filter(Boolean).join(" · ") || undefined,
+        included: plan.included,
+        addedAt: plan.addedAt,
       })),
   ];
+
+  // Finished: kept so the client can look back at what was done for them, newest first.
+  const history = all
+    .filter((plan) => plan.status === "done")
+    .map((plan) => ({
+      name: plan.name,
+      billing: paidOnce(plan) ? ("one_time" as const) : ("monthly" as const),
+      price: paidOnce(plan) ? (plan.oneTime ?? 0) : plan.monthly,
+      included: plan.included,
+      addedAt: plan.addedAt,
+      doneAt: plan.doneAt,
+    }))
+    .sort((a, b) => (b.doneAt ? new Date(b.doneAt).getTime() : 0) - (a.doneAt ? new Date(a.doneAt).getTime() : 0));
 
   return ApiResponse(res, 200, "Services fetched successfully", {
     ...taken,
@@ -289,6 +316,7 @@ export const listMyServices = asyncHandler(async (req: Request, res: Response) =
     requests: (client?.serviceRequests ?? []).filter((request) => request.status !== "dismissed").map(({ name, status, requestedAt }) => ({ name, status, requestedAt })),
     oneTime,
     oneTimeTotal: oneTime.reduce((sum, item) => sum + item.price, 0),
+    history,
   });
 });
 

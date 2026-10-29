@@ -8,7 +8,8 @@ import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
 import { clientScopeFor as scopeFor } from "../utils/clientAccess";
 import { emailClientAdded, emailPortalLogin } from "../utils/activityEmails";
-import { notifyOnboardingApproved } from "../utils/notifications";
+import { notifyOnboardingApproved, notifyServicesUpdated } from "../utils/notifications";
+import { plansOf, stampPlans } from "../utils/clientServicePlans";
 import { stepOfItem } from "../utils/onboardingUpdates";
 import { unseal } from "../utils/secretBox";
 import { removeClientData } from "../utils/clientCleanup";
@@ -182,6 +183,8 @@ export const createClient = asyncHandler(async (req: Request, res: Response) => 
     team,
     createdBy: requester._id,
   });
+  // When each service was added (now), and when any already done was finished.
+  stampPlans(client, []);
   applyShared(client, req.body.shared);
   applyControls(client, req.body.onboardingControls);
   const user = withLogin
@@ -340,8 +343,11 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   if (status !== undefined) client.status = status;
   if (notes !== undefined) client.notes = notes;
   if (portalMenus !== undefined) client.portalMenus = portalMenus;
-  // The form sends everything it holds, so what is sent replaces what was there.
+  // The form sends everything it holds, so what is sent replaces what was there. Each service
+  // keeps when it was added and finished, and the client hears what changed (below).
+  const plansBefore = plansOf(client);
   if (details !== undefined) client.set("details", details);
+  const serviceChanges = details !== undefined ? stampPlans(client, plansBefore) : undefined;
   applyShared(client, req.body.shared);
   const approvedBefore = new Set<string>(client.onboarding?.approved ?? []);
   applyControls(client, req.body.onboardingControls);
@@ -398,6 +404,8 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   if (password && loginUser) await emailPortalLogin(client, password, loginCreated);
   // Items the team just approved on the client's onboarding: the client hears at once.
   if (newlyApproved) await notifyOnboardingApproved(client._id, requester, newlyApproved);
+  // A service added, finished, changed or taken off: the client hears at once.
+  if (serviceChanges) await notifyServicesUpdated(client._id, requester, serviceChanges);
 
   // Closing or pausing a client shuts every one of its logins, not just the main one.
   if (status !== undefined) {

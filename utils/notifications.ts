@@ -69,6 +69,7 @@ const EMAIL_LOOK: Record<NotificationType, { eyebrow: string; tone: EmailTone; b
   client_signed_up: { eyebrow: "New client", tone: "success", button: "Open the client" },
   onboarding_call_booked: { eyebrow: "Call booked", tone: "success", button: "Open the onboarding" },
   onboarding_approved: { eyebrow: "Approved", tone: "success", button: "Open your onboarding" },
+  services_updated: { eyebrow: "Your services", tone: "info", button: "See your services" },
 };
 
 // The same notification by email, to those of the recipients who have an address. Clients get
@@ -346,6 +347,51 @@ export const notifyOnboardingApproved = quietly(async (clientId: Id, actor: IUse
     }
   }
   emitToUsers(recipients.map(String), "notifications:new", { type: "onboarding_approved", client: String(clientId) });
+});
+
+// ── The client's services ────────────────────────────────────────────────────
+
+// What changed on the client's services in one save, by name.
+export type ServiceChanges = { added: string[]; done: string[]; changed: string[]; removed: string[] };
+
+const listOf = (names: string[]) => (names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
+
+// The team added, finished, changed or took off one of the client's services: they hear at once.
+export const notifyServicesUpdated = quietly(async (clientId: Id, actor: IUser, changes: ServiceChanges) => {
+  const { added, done, changed, removed } = changes;
+  if (!added.length && !done.length && !changed.length && !removed.length) return;
+  const recipients = (await clientLoginsOf(clientId)).filter((id) => String(id) !== String(actor._id));
+  if (!recipients.length) return;
+
+  const title = added.length
+    ? `New service added: ${listOf(added)}`
+    : done.length
+      ? `Completed: ${listOf(done)}`
+      : changed.length
+        ? `Service updated: ${listOf(changed)}`
+        : `Service removed: ${listOf(removed)}`;
+  const body = [
+    added.length ? `Added: ${listOf(added)}.` : "",
+    done.length ? `Completed: ${listOf(done)}. It stays in your service history.` : "",
+    changed.length ? `Updated: ${listOf(changed)}.` : "",
+    removed.length ? `Removed: ${listOf(removed)}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  await Notification.insertMany(
+    recipients.map((recipient) => ({
+      recipient,
+      type: "services_updated",
+      title: clip(title, NOTIFICATION_TITLE_MAX_LENGTH),
+      body: clip(body, NOTIFICATION_BODY_MAX_LENGTH),
+      link: "/services",
+      actor: actor._id,
+      actorName: actor.fullName,
+      client: clientId,
+    }))
+  );
+  emitToUsers(recipients.map(String), "notifications:new", { type: "services_updated", client: String(clientId) });
 });
 
 // ── Clearing up ──────────────────────────────────────────────────────────────

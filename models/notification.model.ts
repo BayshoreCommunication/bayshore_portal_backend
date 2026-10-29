@@ -37,6 +37,8 @@ export const NOTIFICATION_TYPES = [
   "onboarding_call_booked",
   // To the client: the team approved items on their onboarding form.
   "onboarding_approved",
+  // To the client: the team added, changed or finished one of their services.
+  "services_updated",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -87,7 +89,7 @@ export interface INotification extends Document {
  *         recipient: { type: string, description: User id of the person it is for }
  *         type:
  *           type: string
- *           enum: [content_sent, content_resubmitted, content_comment, content_feedback, content_approved, content_caption_edited, message, report_published, project_created, onboarding_comment, client_signed_up, onboarding_call_booked, onboarding_approved]
+ *           enum: [content_sent, content_resubmitted, content_comment, content_feedback, content_approved, content_caption_edited, message, report_published, project_created, onboarding_comment, client_signed_up, onboarding_call_booked, onboarding_approved, services_updated]
  *         title: { type: string, example: Carter Injury Law asked for changes }
  *         body: { type: string, description: 'The piece''s title, or the start of the comment' }
  *         link: { type: string, description: 'Path in the recipient''s own portal', example: /content/665f1c2ab7e4c81d9a0f3b21 }
