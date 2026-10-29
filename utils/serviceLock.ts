@@ -4,9 +4,10 @@ import type { IUser } from "../models/user.model";
 import { env } from "../config/env";
 import { ApiError } from "./ApiError";
 
-// Services in the company portal open only with a security code (env SERVICE_ACCESS_CODES): by
-// role, or for one person by their email. The right code gets a pass for a while — sent back on
-// every services request (header X-Services-Unlock). Changing someone's code ends their pass.
+// Services in the company portal — and a client's passwords — open only with a security code (env
+// SERVICE_ACCESS_CODES): by role, or for one person by their email. The right code gets a pass for
+// a while, sent back on every such request (header X-Services-Unlock). Changing someone's code
+// ends their pass.
 
 export const SERVICE_UNLOCK_HEADER = "x-services-unlock";
 // How long a pass lasts.
@@ -33,7 +34,7 @@ const tries = new Map<string, { count: number; until?: number }>();
 // The code they typed: a pass if it is right.
 export const unlockServices = (user: IUser, typed: string) => {
   const code = codeFor(user);
-  if (!code) throw new ApiError(403, "You don't have access to Services");
+  if (!code) throw new ApiError(403, "You don't have access to this");
 
   const id = String(user._id);
   const record = tries.get(id);
@@ -62,10 +63,10 @@ export const passIsGood = (user: IUser, token: unknown) => {
   return same(Buffer.from(signature), Buffer.from(signOf(`${id}.${expiresAt}`, code)));
 };
 
-// On the team's services routes, after protect: no good pass, no services.
+// On the team's services routes and the password routes, after protect: no good pass, no answer.
 export const requireServicesUnlocked = (req: Request, _res: Response, next: NextFunction) => {
   if (!passIsGood(req.user!, req.headers[SERVICE_UNLOCK_HEADER])) {
-    return next(new ApiError(SERVICES_LOCKED, canUnlockServices(req.user!) ? "Enter the security code to open Services" : "You don't have access to Services"));
+    return next(new ApiError(SERVICES_LOCKED, canUnlockServices(req.user!) ? "Enter your security code" : "You don't have access to this"));
   }
   next();
 };

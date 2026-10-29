@@ -18,6 +18,7 @@ import {
 import { addMyOnboardingComment, addOnboardingComment, listMyOnboardingComments, listOnboardingComments, replyToOnboardingComment } from "../controllers/onboardingComment.controller";
 import { commentUpload, onboardingMediaUpload } from "../middleware/upload";
 import { protect, authorize } from "../middleware/auth";
+import { requireServicesUnlocked as unlocked } from "../utils/serviceLock";
 import { validate } from "../middleware/validate";
 import { USER_ROLES, type UserRole } from "../models/user.model";
 import {
@@ -369,7 +370,7 @@ router.patch("/clients/:clientId", protect, authorize(...CAN_MANAGE), onboarding
  * /onboarding/clients/{clientId}/password:
  *   get:
  *     summary: Staff (managers) — read one password a client shared on their onboarding form
- *     description: "`login` is where it is kept: domain, hosting, cms, or an account such as google.ads or social.instagram. Opened only on request; the client's record never carries it readable."
+ *     description: "`login` is where it is kept: domain, hosting, cms, or an account such as google.ads or social.instagram. Opened only on request, with the security code's pass (X-Services-Unlock header — see POST /services/unlock); the client's record never carries it readable."
  *     tags: [Onboarding]
  *     security:
  *       - bearerAuth: []
@@ -378,6 +379,8 @@ router.patch("/clients/:clientId", protect, authorize(...CAN_MANAGE), onboarding
  *         description: The password
  *       404:
  *         description: No such client, or no password saved there
+ *       423:
+ *         description: The security code wasn't entered
  */
 /**
  * @swagger
@@ -422,7 +425,7 @@ router.delete(
   removeClientOnboardingMedia
 );
 
-router.get("/clients/:clientId/password", protect, authorize(...CAN_MANAGE), onboardingCommentsClientRule, validate, revealClientOnboardingPassword);
+router.get("/clients/:clientId/password", protect, authorize(...CAN_MANAGE), unlocked, onboardingCommentsClientRule, validate, revealClientOnboardingPassword);
 
 router.get("/clients/:clientId/comments", protect, authorize(...STAFF_ROLES), onboardingCommentsClientRule, validate, listOnboardingComments);
 router.post(

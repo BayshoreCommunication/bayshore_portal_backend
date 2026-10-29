@@ -283,19 +283,34 @@ export const getClient = asyncHandler(async (req: Request, res: Response) => {
     .populate("user", "fullName email phone avatar status lastLoginAt");
   if (!client) throw new ApiError(404, "Client not found");
 
-  // Those who manage clients can read the portal password back. One set before it was kept
-  // readable — or sealed with another key — comes back as nothing.
-  let portalPassword: string | undefined;
-  if (CAN_SEE_PASSWORD.includes(requester.role) && client.user) {
-    const login = await User.findById(client.user).select("+passwordSealed").lean();
-    try {
-      portalPassword = login?.passwordSealed ? unseal(login.passwordSealed) : undefined;
-    } catch {
-      portalPassword = undefined;
-    }
-  }
+  // Those who manage clients are told whether the portal password can be read back — the password
+  // itself only comes with the security code (getClientPortalPassword).
+  const hasPortalPassword = CAN_SEE_PASSWORD.includes(requester.role) ? Boolean(await portalPasswordOf(client)) : undefined;
 
-  return ApiResponse(res, 200, "Client fetched successfully", { ...client.toJSON(), portalPassword });
+  return ApiResponse(res, 200, "Client fetched successfully", { ...client.toJSON(), hasPortalPassword });
+});
+
+// The client's portal password, readable. One set before it was kept readable — or sealed with
+// another key — comes back as nothing.
+const portalPasswordOf = async (client: IClient) => {
+  if (!client.user) return undefined;
+  const login = await User.findById(client.user).select("+passwordSealed").lean();
+  try {
+    return login?.passwordSealed ? unseal(login.passwordSealed) : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+// GET /clients/:id/portal-password — behind the security code (routes: requireServicesUnlocked).
+export const getClientPortalPassword = asyncHandler(async (req: Request, res: Response) => {
+  const requester = req.user!;
+  if (!CAN_SEE_PASSWORD.includes(requester.role)) throw new ApiError(403, "You do not have permission to perform this action");
+  const client = await Client.findOne({ $and: [{ _id: req.params.id }, scopeFor(requester)] });
+  if (!client) throw new ApiError(404, "Client not found");
+  const password = await portalPasswordOf(client);
+  if (!password) throw new ApiError(404, "No portal password to show");
+  return ApiResponse(res, 200, "Password fetched", { password });
 });
 
 export const updateClient = asyncHandler(async (req: Request, res: Response) => {

@@ -3,6 +3,7 @@ import {
   createClient,
   listClients,
   getClient,
+  getClientPortalPassword,
   getMyPortal,
   updateClient,
   deleteClient,
@@ -16,6 +17,7 @@ import {
   updateClientRules,
   listClientsRules,
 } from "../validators/client.validator";
+import { requireServicesUnlocked as unlocked } from "../utils/serviceLock";
 
 const router = Router();
 
@@ -336,6 +338,29 @@ router.get("/", protect, authorize(...STAFF_ROLES), listClientsRules, validate, 
 router.get("/me/portal", protect, authorize("client"), getMyPortal);
 
 router.get("/:id", protect, authorize(...STAFF_ROLES), clientIdRule, validate, getClient);
+/**
+ * @swagger
+ * /clients/{id}/portal-password:
+ *   get:
+ *     summary: The client's portal password, readable
+ *     description: Those who manage clients, with the security code's pass (X-Services-Unlock header — see POST /services/unlock). Without it, 423.
+ *     tags: [Clients]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: "{ password }"
+ *       404:
+ *         description: No such client, or no password that can be shown
+ *       423:
+ *         description: The security code wasn't entered
+ */
+router.get("/:id/portal-password", protect, authorize(...CAN_MANAGE), unlocked, clientIdRule, validate, getClientPortalPassword);
 router.patch("/:id", protect, authorize(...CAN_MANAGE), clientIdRule, updateClientRules, validate, updateClient);
 router.delete("/:id", protect, authorize(...CAN_DELETE), clientIdRule, validate, deleteClient);
 
