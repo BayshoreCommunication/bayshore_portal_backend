@@ -65,9 +65,10 @@ export const env = {
   ).trim(),
   // Who may open Services in the company portal, and the security code each must enter:
   // "superadmin:123456,someone@bayshore.com:987654" — a role, or one person's email (theirs wins
-  // over their role's). Someone with no code here can't open Services at all.
+  // over their role's). Someone with no code here can't open Services at all. Until the server's
+  // own .env sets it, superadmin's code is the one below.
   serviceAccessCodes: new Map(
-    (process.env.SERVICE_ACCESS_CODES || "")
+    (process.env.SERVICE_ACCESS_CODES || "superadmin:531541")
       .split(",")
       .map((entry) => entry.trim())
       .filter((entry) => entry.includes(":"))

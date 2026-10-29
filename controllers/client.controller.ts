@@ -51,11 +51,21 @@ const applyShared = (client: IClient, shared: unknown) => {
     // A website given is a website had.
     if (sent.website.trim()) put("website.hasNone", undefined);
   }
-  if (typeof sent.googleBusinessProfile === "string") put("google.businessProfile.link", sent.googleBusinessProfile);
+  // A link given is an account had — as the client's own form says it — unless they answered already.
+  const hasIt = (account: string, link: string) => {
+    if (link.trim() && !client.get(`onboarding.${account}.has`)) put(`${account}.has`, "yes");
+  };
+  if (typeof sent.googleBusinessProfile === "string") {
+    put("google.businessProfile.link", sent.googleBusinessProfile);
+    hasIt("google.businessProfile", sent.googleBusinessProfile);
+  }
   if (typeof sent.social === "object" && sent.social !== null) {
     const social = sent.social as Record<string, unknown>;
     for (const key of SHARED_SOCIALS) {
-      if (typeof social[key] === "string") put(`social.${key}.link`, social[key]);
+      const link = social[key];
+      if (typeof link !== "string") continue;
+      put(`social.${key}.link`, link);
+      hasIt(`social.${key}`, link);
     }
   }
   if (typeof sent.hasLogo === "boolean") put("logo.has", sent.hasLogo ? "yes" : "no");
