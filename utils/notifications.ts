@@ -412,7 +412,9 @@ export const notifyCallBooked = quietly(async (clientId: Id, actor: IUser) => {
 // A comment (or a reply) on a step of the client's onboarding form, to the other side: from the
 // client, to the staff on them; from the team, to the client's logins. Their bell updates at once.
 export const notifyOnboardingComment = quietly(
-  async (clientId: Id, actor: IUser, input: { side: "client" | "team"; step: string; text?: string; attachments: number; reply?: boolean }) => {
+  async (clientId: Id, actor: IUser, input: { side: "client" | "team"; step: string; stepId?: string; item?: string; text?: string; attachments: number; reply?: boolean }) => {
+    // The client's form opens at the step (and item) it is on.
+    const onForm = `/onboarding${input.stepId ? `?step=${encodeURIComponent(input.stepId)}${input.item ? `&item=${encodeURIComponent(input.item)}` : ""}` : ""}`;
     const client = await Client.findById(clientId).select("companyName accountManager team createdBy").lean();
     const company = client?.companyName ?? "A client";
     let recipients: Id[];
@@ -436,7 +438,7 @@ export const notifyOnboardingComment = quietly(
         type: "onboarding_comment" as const,
         title: clip(title, NOTIFICATION_TITLE_MAX_LENGTH),
         body: clip(`${input.step} — ${excerptOf(input.text, input.attachments)}`, NOTIFICATION_BODY_MAX_LENGTH),
-        link: input.side === "client" ? `/clients/${clientId}/onboarding` : "/onboarding",
+        link: input.side === "client" ? `/clients/${clientId}/onboarding` : onForm,
         actor: actor._id,
         actorName: actor.fullName,
         client: clientId,
@@ -450,7 +452,7 @@ export const notifyOnboardingComment = quietly(
     if (!emailReady) return;
     const audience = input.side === "client" ? "team" : "client";
     const look = EMAIL_LOOK.onboarding_comment;
-    const url = audience === "client" ? `${env.clientPortalUrl}/onboarding` : `${env.companyPortalUrl}/clients/${clientId}/onboarding`;
+    const url = audience === "client" ? `${env.clientPortalUrl}/sign-in?callbackUrl=${encodeURIComponent(onForm)}` : `${env.companyPortalUrl}/clients/${clientId}/onboarding`;
     const people = await User.find({ _id: { $in: recipients }, email: { $nin: [null, ""] } }).select("fullName email").lean();
     await Promise.all(
       people.map((person) =>

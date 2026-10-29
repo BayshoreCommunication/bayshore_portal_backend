@@ -190,6 +190,9 @@ export interface IClientOnboarding {
   // list is the team saying this client needs every step.
   notNeeded?: string[];
   approved: string[];
+  // The items the team asked the client to update (a comment on the item): back to do for the
+  // client until they change it, reply on it or hand the form in again (utils/onboardingUpdates.ts).
+  updateAsked: string[];
 
   // About the business. Its name is the client's own `companyName`.
   business?: {
@@ -729,6 +732,7 @@ const onboardingSchema = new Schema<IClientOnboarding>(
     // No default: missing means the team hasn't said yet, which an empty list wouldn't.
     notNeeded: { type: [{ type: String, trim: true, maxlength: ONBOARDING_CONTROL_ID_MAX_LENGTH }], default: undefined },
     approved: { type: [{ type: String, trim: true, maxlength: ONBOARDING_CONTROL_ID_MAX_LENGTH }], default: [] },
+    updateAsked: { type: [{ type: String, trim: true, maxlength: ONBOARDING_CONTROL_ID_MAX_LENGTH }], default: [] },
 
     business: {
       type: new Schema(

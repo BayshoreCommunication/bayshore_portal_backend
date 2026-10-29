@@ -23,6 +23,7 @@ import { seal, unseal } from "../utils/secretBox";
 import { deleteFromSpaces, uploadToSpaces } from "../utils/uploadToSpaces";
 import { callBookedOf, emailCallBooked } from "../utils/onboardingEmails";
 import { notifyCallBooked } from "../utils/notifications";
+import { answersOfItems, askedItemsOf } from "../utils/onboardingUpdates";
 import { canAccessClient } from "../utils/clientAccess";
 
 // Onboarding, for someone who has no account yet. Nobody is signed in here, so these routes
@@ -309,7 +310,19 @@ export const updateMyOnboarding = asyncHandler(async (req: Request, res: Respons
     }
     client.phone = phone;
   }
+  // What the team asked them to update, and its answers before — to tell what they changed.
+  const asked = client.onboarding?.updateAsked ?? [];
+  const askedBefore = answersOfItems(client, asked);
   applyAnswers(client, req.body);
+  // Handing the form in again answers every ask; otherwise an item they changed is answered.
+  if (asked.length) {
+    const after = answersOfItems(client, asked);
+    // Hosting and the website's login are one card on the form: a change to either answers both.
+    const changed = asked.filter((item) => after[item] !== askedBefore[item]);
+    const done = new Set(changed.flatMap((item) => (item === "cms" ? ["hosting", "cms"] : askedItemsOf(item))));
+    const still = req.body.submit === true ? [] : asked.filter((item) => !done.has(item));
+    if (still.length !== asked.length) client.set("onboarding.updateAsked", still);
+  }
 
   // The client's main login mirrors its contact details, as when the team edits them
   // (client.controller.ts → updateClient). Another login of the same client is left as it is.

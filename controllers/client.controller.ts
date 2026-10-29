@@ -81,6 +81,9 @@ const applyControls = (client: IClient, controls: unknown) => {
     const ids = Array.from(new Set((sent[list] as unknown[]).filter((id): id is string => typeof id === "string").map((id) => id.trim()).filter(Boolean)));
     if (list === "approved" && !ids.length && !client.get("onboarding.approved")?.length) continue;
     client.set(`onboarding.${list}`, ids);
+    // An item approved needs no more updating.
+    const asked: string[] = client.get("onboarding.updateAsked") ?? [];
+    if (list === "approved" && asked.some((id) => ids.includes(id))) client.set("onboarding.updateAsked", asked.filter((id) => !ids.includes(id)));
   }
 };
 
