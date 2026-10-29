@@ -1,7 +1,12 @@
 import { body, header, param, query, type ValidationChain } from "express-validator";
 import { ONBOARDING_STATUSES, ONBOARDING_UPLOAD_KINDS } from "../models/client.model";
 import { PHONE_REGEX } from "../models/user.model";
-import { ONBOARDING_COMMENT_MAX_LENGTH, ONBOARDING_COMMENT_STEPS } from "../models/onboardingComment.model";
+import {
+  ONBOARDING_COMMENT_ITEM_LABEL_MAX_LENGTH,
+  ONBOARDING_COMMENT_ITEM_MAX_LENGTH,
+  ONBOARDING_COMMENT_MAX_LENGTH,
+  ONBOARDING_COMMENT_STEPS,
+} from "../models/onboardingComment.model";
 import { normalizePhone } from "../utils/phone";
 
 // The parts of a client's onboarding answers, as they are named on the client record
@@ -77,6 +82,8 @@ const commentTextRule = body("text")
 
 export const addOnboardingCommentRules: ValidationChain[] = [
   body("step").isIn(ONBOARDING_COMMENT_STEPS).withMessage(`step must be one of: ${ONBOARDING_COMMENT_STEPS.join(", ")}`),
+  body("item").optional().isString().trim().isLength({ max: ONBOARDING_COMMENT_ITEM_MAX_LENGTH }).withMessage("Invalid item"),
+  body("itemLabel").optional().isString().trim().isLength({ max: ONBOARDING_COMMENT_ITEM_LABEL_MAX_LENGTH }).withMessage("Invalid item name"),
   commentTextRule,
 ];
 

@@ -18,6 +18,9 @@ export const ONBOARDING_COMMENT_STEPS = ["contact", "web", "domain", "email", "l
 export type OnboardingCommentStep = (typeof ONBOARDING_COMMENT_STEPS)[number];
 
 export const ONBOARDING_COMMENT_MAX_LENGTH = 1000;
+// An item of a step a comment is about ("social.facebook"), and its name as the form shows it.
+export const ONBOARDING_COMMENT_ITEM_MAX_LENGTH = 80;
+export const ONBOARDING_COMMENT_ITEM_LABEL_MAX_LENGTH = 120;
 export const ONBOARDING_COMMENT_MAX_FILES = 5;
 
 // A reply from the BayShore team.
@@ -34,6 +37,9 @@ export interface IOnboardingCommentReply {
 export interface IOnboardingComment extends Document {
   client: Types.ObjectId;
   step: OnboardingCommentStep;
+  // The item of the step it is about, when it is about one ("social.facebook"), and its name.
+  item?: string;
+  itemLabel?: string;
   side: OnboardingCommentSide;
   // Who wrote it, and their name as it was then.
   author: Types.ObjectId;
@@ -77,6 +83,8 @@ const onboardingCommentSchema = new Schema<IOnboardingComment>(
   {
     client: { type: Schema.Types.ObjectId, ref: "Client", required: true },
     step: { type: String, enum: ONBOARDING_COMMENT_STEPS, required: true },
+    item: { type: String, trim: true, maxlength: ONBOARDING_COMMENT_ITEM_MAX_LENGTH },
+    itemLabel: { type: String, trim: true, maxlength: ONBOARDING_COMMENT_ITEM_LABEL_MAX_LENGTH },
     // Missing on comments from before the team could start one: those are all the client's.
     side: { type: String, enum: ONBOARDING_COMMENT_SIDES, default: "client" },
     author: { type: Schema.Types.ObjectId, ref: "User", required: true },

@@ -19,6 +19,8 @@ const viewOf = (comment: IOnboardingComment) => ({
   _id: comment._id,
   client: String(comment.client),
   step: comment.step,
+  item: comment.item,
+  itemLabel: comment.itemLabel,
   side: comment.side ?? "client",
   authorName: comment.authorName,
   text: comment.text,
@@ -49,9 +51,17 @@ const STEP_TITLES: Record<string, string> = {
 // conversation), and a notification to the other side — as a comment on a piece is.
 const spread = async (comment: IOnboardingComment, actor: IUser, side: "client" | "team", said: { text: string; files: IOnboardingComment["files"] }, reply = false) => {
   emitToClient(String(comment.client), "onboarding:comment", viewOf(comment));
-  const step = STEP_TITLES[comment.step] ?? comment.step;
+  const stepTitle = STEP_TITLES[comment.step] ?? comment.step;
+  const step = comment.itemLabel ? `${stepTitle} · ${comment.itemLabel}` : stepTitle;
   await announceOnboardingComment(comment.client, actor, step, said.text, said.files);
   await notifyOnboardingComment(comment.client, actor, { side, step, text: said.text, attachments: said.files.length, reply });
+};
+
+// The item of the step a new comment is about, if any (validators/onboarding.validator.ts).
+const itemOf = (req: Request) => {
+  const item = typeof req.body.item === "string" ? req.body.item.trim() : "";
+  const itemLabel = typeof req.body.itemLabel === "string" ? req.body.itemLabel.trim() : "";
+  return item ? { item, itemLabel: itemLabel || undefined } : {};
 };
 
 const filesOf = (req: Request) => ((req.files ?? {}) as Record<string, Express.Multer.File[]>).files ?? [];
@@ -94,6 +104,7 @@ export const addMyOnboardingComment = asyncHandler(async (req: Request, res: Res
     const comment = await OnboardingComment.create({
       client,
       step: req.body.step,
+      ...itemOf(req),
       side: "client",
       author: req.user!._id,
       authorName: req.user!.fullName,
@@ -122,6 +133,7 @@ export const addOnboardingComment = asyncHandler(async (req: Request, res: Respo
     const comment = await OnboardingComment.create({
       client,
       step: req.body.step,
+      ...itemOf(req),
       side: "team",
       author: req.user!._id,
       authorName: req.user!.fullName,
