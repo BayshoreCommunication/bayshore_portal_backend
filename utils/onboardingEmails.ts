@@ -5,9 +5,11 @@ import { activityEmail, emailReady, sendEmail, type ActivityEmail } from "./emai
 // The emails that walk a new client through onboarding:
 //   1. Welcome — when their portal account is made: how to sign in, and the two things to do
 //      first: fill in the onboarding form and book the onboarding call.
-//   2. Reminders — while the call isn't booked: the form can wait; book the call, and a
-//      marketing specialist fills it in with them on it (see startOnboardingReminders).
-//   3. Call booked — once they say they've booked it ("I've booked my call"): what the call is for.
+//   2. Reminder — 3 hours after the welcome, if the call still isn't booked: the form can wait;
+//      book the call, and a marketing specialist fills it in with them on it (see startOnboardingReminders).
+//      Booking before then means no reminder: only clients not booked are looked for.
+//   3. Call booked — the moment they say they've booked it ("I've booked my call"), at any point:
+//      what the call is for. Never waits for the reminder check.
 // Each goes once; what has gone out is kept on the client (client.onboardingEmails). Like every
 // email here, none of them ever throws: a failure is logged, and whatever caused it carries on.
 
@@ -104,11 +106,11 @@ export const emailCallBooked = async (client: IClient): Promise<void> => {
 
 // ── 2. Reminders ─────────────────────────────────────────────────────────────
 
-// When each reminder goes, in hours after the account was made: a day later, then three days
-// later. After the last one, no more.
-export const REMINDER_HOURS = [24, 72];
-// How often the reminders due are looked for.
-const CHECK_EVERY = HOUR;
+// When each reminder goes, in hours after the account was made (the welcome goes out then): one,
+// 3 hours later. After it, no more.
+export const REMINDER_HOURS = [3];
+// How often the reminders due are looked for — often, so a reminder goes close to 3 hours, not up to an hour late.
+const CHECK_EVERY = 5 * 60 * 1000;
 // A client made longer ago than this is never reminded — so the first run doesn't write to
 // everyone who signed up before these emails existed.
 const REMIND_WITHIN = (REMINDER_HOURS[REMINDER_HOURS.length - 1] + 48) * HOUR;
@@ -162,7 +164,7 @@ export const sendDueReminders = async () => {
   }
 };
 
-// Looks for reminders due every hour, from a minute after the server starts. The server runs as
+// Looks for reminders due every 5 minutes, from a minute after the server starts. The server runs as
 // one process (ecosystem.config.js), so this runs once — and the claims above keep it safe if not.
 export const startOnboardingReminders = () => {
   if (!emailReady) {
