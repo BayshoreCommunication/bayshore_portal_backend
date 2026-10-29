@@ -162,6 +162,17 @@ export const announceRevisionRequested = (content: IContent, actor: IUser, text:
 export const announceRevisionSubmitted = (content: IContent, actor: IUser, note: string | undefined, revision: number | undefined) =>
   announce(content, actor, { kind: "revision_submitted", text: note, revision });
 
+// A service the client asked for, in their conversation too. Its notification goes out on its
+// own (notifyServiceRequested), so this adds none.
+export const announceServiceRequest = async (clientId: Id, actor: IUser, text: string) => {
+  try {
+    const message = await Message.create({ client: clientId, kind: "text", side: sideOf(actor), sender: actor._id, senderName: actor.fullName, text, attachments: [] });
+    emitNewMessage(String(message.client), message.toJSON());
+  } catch (error) {
+    console.error("Automatic message failed:", error);
+  }
+};
+
 // A comment on a step of the client's onboarding form, in their conversation too — where it
 // happened in time. Its notification goes out on its own (notifyOnboardingComment), so this adds
 // none; and like the other automatic messages, it never fails the comment it reports.

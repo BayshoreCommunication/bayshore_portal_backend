@@ -353,6 +353,7 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   applyControls(client, req.body.onboardingControls);
   const newlyApproved = (client.onboarding?.approved ?? []).filter((id) => !approvedBefore.has(id)).length;
   // The client's requests the team answered on the form: added as a service, or set aside.
+  const openBefore = new Set(client.serviceRequests.filter((request) => request.status === "open").map((request) => String(request._id)));
   for (const [list, status] of [["serviceRequestsAdded", "added"], ["serviceRequestsDismissed", "dismissed"]] as const) {
     const ids: unknown = req.body[list];
     if (!Array.isArray(ids)) continue;
@@ -362,6 +363,8 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   const named = (name: string) => name.trim().toLowerCase();
   const onRecord = new Set([...(client.details?.services ?? []).map((plan) => named(plan.name)), ...(client.serviceTypes ?? []).map(named)]);
   for (const request of client.serviceRequests) if (request.status === "open" && onRecord.has(named(request.name))) request.status = "added";
+  // Set aside just now: the client hears it with their services.
+  const declined = client.serviceRequests.filter((request) => request.status === "dismissed" && openBefore.has(String(request._id))).map((request) => request.name);
   if (accountManager !== undefined) client.accountManager = accountManager || undefined;
   if (team !== undefined) client.team = team;
 
@@ -405,7 +408,7 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   // Items the team just approved on the client's onboarding: the client hears at once.
   if (newlyApproved) await notifyOnboardingApproved(client._id, requester, newlyApproved);
   // A service added, finished, changed or taken off: the client hears at once.
-  if (serviceChanges) await notifyServicesUpdated(client._id, requester, serviceChanges);
+  if (serviceChanges || declined.length) await notifyServicesUpdated(client._id, requester, { ...(serviceChanges ?? { added: [], done: [], changed: [], removed: [] }), declined });
 
   // Closing or pausing a client shuts every one of its logins, not just the main one.
   if (status !== undefined) {

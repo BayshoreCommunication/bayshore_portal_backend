@@ -9,8 +9,8 @@ import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
 import { canAccessClient, visibleClientFilter } from "../utils/clientAccess";
 import { planFromCatalog } from "../utils/clientServices";
-import { postMessage } from "../utils/messages";
-import { notifyServicesUpdated, type ServiceChanges } from "../utils/notifications";
+import { announceServiceRequest } from "../utils/messages";
+import { notifyServiceRequested, notifyServicesUpdated, type ServiceChanges } from "../utils/notifications";
 
 type SubServiceInput = { _id?: string; name: string; price: number };
 
@@ -262,13 +262,15 @@ export const listMyServices = asyncHandler(async (req: Request, res: Response) =
   // Running now: what is billed. Finished ones (marked done by the team) are their history.
   const all = client?.details?.services ?? [];
   const recorded = all.filter((plan) => plan.status !== "done");
-  const paidOnce = (plan: (typeof all)[number]) => Boolean(plan.custom && !plan.monthly && plan.oneTime);
+  // A custom service is always paid once (one saved as monthly before counts as once too).
+  const paidOnce = (plan: (typeof all)[number]) => Boolean(plan.custom);
+  const onceOf = (plan: (typeof all)[number]) => plan.oneTime || plan.monthly || 0;
   const dayOf = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 
   // Paid each month: the services on the record, but for a custom one paid once (below).
   const plans = recorded
     .filter((plan) => !paidOnce(plan))
-    .map(({ name, fields, monthly, included, custom, addedAt }) => ({ name, fields, monthly, included, custom, addedAt }));
+    .map(({ name, fields, monthly, included, addedAt }) => ({ name, fields, monthly, included, addedAt }));
   // Never priced: not on the record at all (a one-time custom is on it, and is listed below).
   const unpriced = (client?.serviceTypes ?? []).filter((name) => !all.some((plan) => plan.name === name));
 
@@ -283,10 +285,10 @@ export const listMyServices = asyncHandler(async (req: Request, res: Response) =
       : []),
     // The team's own services that are paid once.
     ...recorded
-      .filter((plan) => plan.custom && plan.oneTime)
+      .filter(paidOnce)
       .map((plan) => ({
         name: plan.name,
-        price: plan.oneTime ?? 0,
+        price: onceOf(plan),
         // When it is due, and how long it takes.
         detail: [plan.deadline ? `due ${dayOf(plan.deadline)}` : "", plan.duration ?? ""].filter(Boolean).join(" · ") || undefined,
         included: plan.included,
@@ -300,7 +302,7 @@ export const listMyServices = asyncHandler(async (req: Request, res: Response) =
     .map((plan) => ({
       name: plan.name,
       billing: paidOnce(plan) ? ("one_time" as const) : ("monthly" as const),
-      price: paidOnce(plan) ? (plan.oneTime ?? 0) : plan.monthly,
+      price: paidOnce(plan) ? onceOf(plan) : plan.monthly,
       included: plan.included,
       addedAt: plan.addedAt,
       doneAt: plan.doneAt,
@@ -337,16 +339,13 @@ export const requestMyService = asyncHandler(async (req: Request, res: Response)
 
   const name = typeof req.body.service === "string" && req.body.service.trim() ? req.body.service.trim() : "Something else";
   const note = typeof req.body.note === "string" ? req.body.note.trim().slice(0, 300) : "";
-  // Asking again for one still open doesn't make a second.
+  // Asking again for one still open doesn't make a second (nor tell the team twice).
   if (!client.serviceRequests.some((request) => request.name === name && request.status === "open")) {
     client.serviceRequests.push({ name, note: note || undefined, status: "open", requestedAt: new Date() } as never);
     await client.save();
+    await announceServiceRequest(client._id, req.user!, `Service request: ${name}\n\n${note || `I'd like to request ${name}. Please review my business and send me a plan and a quote.`}`);
+    await notifyServiceRequested(client._id, req.user!, name, note || undefined);
   }
-
-  await postMessage(req.user!, {
-    client: client._id,
-    text: `Service request: ${name}\n\n${note || `I'd like to request ${name}. Please review my business and send me a plan and a quote.`}`,
-  }).catch(() => undefined);
 
   return ApiResponse(res, 201, "Request sent", {
     requests: client.serviceRequests.filter((request) => request.status !== "dismissed").map(({ name: requested, status, requestedAt }) => ({ name: requested, status, requestedAt })),

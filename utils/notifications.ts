@@ -70,6 +70,7 @@ const EMAIL_LOOK: Record<NotificationType, { eyebrow: string; tone: EmailTone; b
   onboarding_call_booked: { eyebrow: "Call booked", tone: "success", button: "Open the onboarding" },
   onboarding_approved: { eyebrow: "Approved", tone: "success", button: "Open your onboarding" },
   services_updated: { eyebrow: "Your services", tone: "info", button: "See your services" },
+  service_requested: { eyebrow: "Service request", tone: "action", button: "Open the client" },
 };
 
 // The same notification by email, to those of the recipients who have an address. Clients get
@@ -352,14 +353,15 @@ export const notifyOnboardingApproved = quietly(async (clientId: Id, actor: IUse
 // ── The client's services ────────────────────────────────────────────────────
 
 // What changed on the client's services in one save, by name.
-export type ServiceChanges = { added: string[]; done: string[]; changed: string[]; removed: string[] };
+// `declined` are requests of theirs the team set aside.
+export type ServiceChanges = { added: string[]; done: string[]; changed: string[]; removed: string[]; declined?: string[] };
 
 const listOf = (names: string[]) => (names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
 
 // The team added, finished, changed or took off one of the client's services: they hear at once.
 export const notifyServicesUpdated = quietly(async (clientId: Id, actor: IUser, changes: ServiceChanges) => {
-  const { added, done, changed, removed } = changes;
-  if (!added.length && !done.length && !changed.length && !removed.length) return;
+  const { added, done, changed, removed, declined = [] } = changes;
+  if (!added.length && !done.length && !changed.length && !removed.length && !declined.length) return;
   const recipients = (await clientLoginsOf(clientId)).filter((id) => String(id) !== String(actor._id));
   if (!recipients.length) return;
 
@@ -369,12 +371,15 @@ export const notifyServicesUpdated = quietly(async (clientId: Id, actor: IUser, 
       ? `Completed: ${listOf(done)}`
       : changed.length
         ? `Service updated: ${listOf(changed)}`
-        : `Service removed: ${listOf(removed)}`;
+        : removed.length
+          ? `Service removed: ${listOf(removed)}`
+          : `About your request: ${listOf(declined)}`;
   const body = [
     added.length ? `Added: ${listOf(added)}.` : "",
     done.length ? `Completed: ${listOf(done)}. It stays in your service history.` : "",
     changed.length ? `Updated: ${listOf(changed)}.` : "",
     removed.length ? `Removed: ${listOf(removed)}.` : "",
+    declined.length ? `We couldn't add ${listOf(declined)} right now. Your account manager will be in touch.` : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -442,6 +447,17 @@ export const notifyClientSignedUp = quietly(async (clientId: Id, actor: IUser) =
     title: (company) => `${company} created a client account`,
     body: [actor.fullName, actor.email].filter(Boolean).join(" · "),
     link: `/clients/${clientId}`,
+  });
+});
+
+// A client asked for a service from their Services page: the team opens the client's services
+// and pricing, where they add it (or set it aside).
+export const notifyServiceRequested = quietly(async (clientId: Id, actor: IUser, name: string, note?: string) => {
+  await notifyTeamOfClient(clientId, actor, {
+    type: "service_requested",
+    title: (company) => `${company} requested ${name === "Something else" ? "a service" : name}`,
+    body: note || `${actor.fullName} would like a plan and a quote.`,
+    link: `/clients/${clientId}/edit?section=3`,
   });
 });
 
