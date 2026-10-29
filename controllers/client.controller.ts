@@ -8,6 +8,7 @@ import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
 import { clientScopeFor as scopeFor } from "../utils/clientAccess";
 import { emailClientAdded, emailPortalLogin } from "../utils/activityEmails";
+import { notifyOnboardingApproved } from "../utils/notifications";
 import { unseal } from "../utils/secretBox";
 import { removeClientData } from "../utils/clientCleanup";
 
@@ -334,7 +335,9 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   // The form sends everything it holds, so what is sent replaces what was there.
   if (details !== undefined) client.set("details", details);
   applyShared(client, req.body.shared);
+  const approvedBefore = new Set<string>(client.onboarding?.approved ?? []);
   applyControls(client, req.body.onboardingControls);
+  const newlyApproved = (client.onboarding?.approved ?? []).filter((id) => !approvedBefore.has(id)).length;
   // The client's requests the team answered on the form: added as a service, or set aside.
   for (const [list, status] of [["serviceRequestsAdded", "added"], ["serviceRequestsDismissed", "dismissed"]] as const) {
     const ids: unknown = req.body[list];
@@ -385,6 +388,8 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   if (password && loginUser) await RefreshToken.deleteMany({ user: loginUser._id });
   // The client gets the way in: their sign-in email and the password just set.
   if (password && loginUser) await emailPortalLogin(client, password, loginCreated);
+  // Items the team just approved on the client's onboarding: the client hears at once.
+  if (newlyApproved) await notifyOnboardingApproved(client._id, requester, newlyApproved);
 
   // Closing or pausing a client shuts every one of its logins, not just the main one.
   if (status !== undefined) {

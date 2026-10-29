@@ -68,6 +68,7 @@ const EMAIL_LOOK: Record<NotificationType, { eyebrow: string; tone: EmailTone; b
   project_created: { eyebrow: "New project", tone: "action", button: "View the project" },
   client_signed_up: { eyebrow: "New client", tone: "success", button: "Open the client" },
   onboarding_call_booked: { eyebrow: "Call booked", tone: "success", button: "Open the onboarding" },
+  onboarding_approved: { eyebrow: "Approved", tone: "success", button: "Open your onboarding" },
 };
 
 // The same notification by email, to those of the recipients who have an address. Clients get
@@ -310,6 +311,41 @@ export const notifyProjectCreated = quietly(async (project: IProject, actor: IUs
     body: project.description?.slice(0, NOTIFICATION_BODY_MAX_LENGTH),
     link: `/projects/${project._id}`,
   });
+});
+
+// Approvals ticked close together are one notification, not one each.
+const APPROVED_TOGETHER_MS = 10 * 60 * 1000;
+const approvedTitle = (items: number) => (items === 1 ? "An item on your onboarding was approved" : `${items} items on your onboarding were approved`);
+
+// The team approved items on the client's onboarding form. Their bell updates at once.
+export const notifyOnboardingApproved = quietly(async (clientId: Id, actor: IUser, items: number) => {
+  if (items < 1) return;
+  const recipients = (await clientLoginsOf(clientId)).filter((id) => String(id) !== String(actor._id));
+  if (!recipients.length) return;
+  const since = new Date(Date.now() - APPROVED_TOGETHER_MS);
+  for (const recipient of recipients) {
+    const open = await Notification.findOne({ recipient, type: "onboarding_approved", client: clientId, readAt: null, createdAt: { $gte: since } });
+    if (open) {
+      open.pieces += items;
+      open.title = approvedTitle(open.pieces);
+      open.actor = actor._id;
+      open.actorName = actor.fullName;
+      await open.save();
+    } else {
+      await Notification.create({
+        recipient,
+        type: "onboarding_approved",
+        title: approvedTitle(items),
+        body: `${actor.fullName} checked and approved your answers.`,
+        link: "/onboarding",
+        actor: actor._id,
+        actorName: actor.fullName,
+        client: clientId,
+        pieces: items,
+      });
+    }
+  }
+  emitToUsers(recipients.map(String), "notifications:new", { type: "onboarding_approved", client: String(clientId) });
 });
 
 // ── Clearing up ──────────────────────────────────────────────────────────────
