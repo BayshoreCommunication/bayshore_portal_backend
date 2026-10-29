@@ -10,6 +10,8 @@ import {
   setClientServices,
   listMyServices,
   listCatalogForClient,
+  getServicesLock,
+  unlockServicesWithCode,
 } from "../controllers/service.controller";
 import { createServiceCheckout, getMyServiceOrder } from "../controllers/payment.controller";
 import { protect, authorize } from "../middleware/auth";
@@ -24,8 +26,49 @@ import {
   serviceOrderSessionRule,
 } from "../validators/service.validator";
 import { SERVICE_READ_ROLES, SERVICE_MANAGE_ROLES, SERVICE_ASSIGN_ROLES } from "../utils/serviceAccess";
+import { requireServicesUnlocked as unlocked } from "../utils/serviceLock";
 
 const router = Router();
+
+/**
+ * @swagger
+ * /services/unlock:
+ *   get:
+ *     summary: Whether you can open Services with a security code
+ *     description: Staff only. Services in the company portal open only with a security code (SERVICE_ACCESS_CODES), set by role or for one person.
+ *     tags: [Services]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: "{ available: boolean, unlocked: boolean } — unlocked when the X-Services-Unlock pass sent is still good"
+ *   post:
+ *     summary: Open Services with your security code
+ *     description: The right code returns a pass, good for 8 hours. Send it as the X-Services-Unlock header on the team's services requests; without it they answer 423. Five wrong codes in a row lock you out for 15 minutes.
+ *     tags: [Services]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [code]
+ *             properties:
+ *               code: { type: string }
+ *     responses:
+ *       200:
+ *         description: "{ token, expiresAt }"
+ *       401:
+ *         description: Wrong code
+ *       403:
+ *         description: No code is set for you
+ *       429:
+ *         description: Too many wrong codes
+ */
+router.get("/unlock", protect, authorize(...SERVICE_READ_ROLES), getServicesLock);
+router.post("/unlock", protect, authorize(...SERVICE_READ_ROLES), unlockServicesWithCode);
 
 /**
  * @swagger
@@ -143,8 +186,8 @@ const router = Router();
  *       422:
  *         description: Validation failed
  */
-router.get("/", protect, authorize(...SERVICE_READ_ROLES), listServices);
-router.post("/", protect, authorize(...SERVICE_MANAGE_ROLES), createServiceRules, validate, createService);
+router.get("/", protect, authorize(...SERVICE_READ_ROLES), unlocked, listServices);
+router.post("/", protect, authorize(...SERVICE_MANAGE_ROLES), unlocked, createServiceRules, validate, createService);
 
 /**
  * @swagger
@@ -354,11 +397,12 @@ router.get("/me/orders/:sessionId", protect, authorize("client"), serviceOrderSe
  *       422:
  *         description: Validation failed, or a service or sub-service is no longer in the catalog
  */
-router.get("/clients/:clientId", protect, authorize(...SERVICE_READ_ROLES), serviceClientIdRule, validate, getClientServices);
+router.get("/clients/:clientId", protect, authorize(...SERVICE_READ_ROLES), unlocked, serviceClientIdRule, validate, getClientServices);
 router.put(
   "/clients/:clientId",
   protect,
   authorize(...SERVICE_ASSIGN_ROLES),
+  unlocked,
   serviceClientIdRule,
   setClientServicesRules,
   validate,
@@ -427,8 +471,8 @@ router.put(
  *       409:
  *         description: Clients still take this service
  */
-router.get("/:id", protect, authorize(...SERVICE_READ_ROLES), serviceIdRule, validate, getService);
-router.patch("/:id", protect, authorize(...SERVICE_MANAGE_ROLES), serviceIdRule, updateServiceRules, validate, updateService);
-router.delete("/:id", protect, authorize(...SERVICE_MANAGE_ROLES), serviceIdRule, validate, deleteService);
+router.get("/:id", protect, authorize(...SERVICE_READ_ROLES), unlocked, serviceIdRule, validate, getService);
+router.patch("/:id", protect, authorize(...SERVICE_MANAGE_ROLES), unlocked, serviceIdRule, updateServiceRules, validate, updateService);
+router.delete("/:id", protect, authorize(...SERVICE_MANAGE_ROLES), unlocked, serviceIdRule, validate, deleteService);
 
 export default router;

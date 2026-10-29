@@ -10,6 +10,7 @@ import { ApiError } from "../utils/ApiError";
 import { canAccessClient, visibleClientFilter } from "../utils/clientAccess";
 import { planFromCatalog } from "../utils/clientServices";
 import { announceServiceRequest } from "../utils/messages";
+import { canUnlockServices, passIsGood, SERVICE_UNLOCK_HEADER, unlockServices } from "../utils/serviceLock";
 import { notifyServiceRequested, notifyServicesUpdated, type ServiceChanges } from "../utils/notifications";
 
 type SubServiceInput = { _id?: string; name: string; price: number };
@@ -350,4 +351,19 @@ export const requestMyService = asyncHandler(async (req: Request, res: Response)
   return ApiResponse(res, 201, "Request sent", {
     requests: client.serviceRequests.filter((request) => request.status !== "dismissed").map(({ name: requested, status, requestedAt }) => ({ name: requested, status, requestedAt })),
   });
+});
+
+// ── The security code in front of Services (company portal) ─────────────────
+
+// Whether the signed-in member of staff has a code to open Services with, and whether the pass
+// they sent (if any) is still good.
+export const getServicesLock = asyncHandler(async (req: Request, res: Response) => {
+  return ApiResponse(res, 200, "Services lock fetched", { available: canUnlockServices(req.user!), unlocked: passIsGood(req.user!, req.headers[SERVICE_UNLOCK_HEADER]) });
+});
+
+// POST /services/unlock — the code they typed: a pass for a while if it is right.
+export const unlockServicesWithCode = asyncHandler(async (req: Request, res: Response) => {
+  const code = typeof req.body.code === "string" ? req.body.code.trim() : "";
+  if (!code) throw new ApiError(422, "Enter the security code");
+  return ApiResponse(res, 200, "Services unlocked", unlockServices(req.user!, code));
 });

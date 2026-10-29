@@ -63,6 +63,20 @@ export const env = {
     process.env.BOOKING_URL ||
     "https://calendar.google.com/calendar/appointments/schedules/AcZssZ3xiwhgZG7-JPeXm3m_pZVueFOj54UnDfxT_JWB3ixQ5v88SIsI-coqD6knMrZzf4k38WzCDkU2"
   ).trim(),
+  // Who may open Services in the company portal, and the security code each must enter:
+  // "superadmin:123456,someone@bayshore.com:987654" — a role, or one person's email (theirs wins
+  // over their role's). Someone with no code here can't open Services at all.
+  serviceAccessCodes: new Map(
+    (process.env.SERVICE_ACCESS_CODES || "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.includes(":"))
+      .map((entry) => {
+        const at = entry.lastIndexOf(":");
+        return [entry.slice(0, at).trim().toLowerCase(), entry.slice(at + 1).trim()] as const;
+      })
+      .filter(([who, code]) => who && code)
+  ),
   // Optional at boot: without them the API runs, and checkout answers 503.
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || "",
