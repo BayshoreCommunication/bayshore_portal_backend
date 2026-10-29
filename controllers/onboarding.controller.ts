@@ -22,6 +22,7 @@ import { ONBOARDING_KEY_HEADER, ONBOARDING_SECTIONS } from "../validators/onboar
 import { seal, unseal } from "../utils/secretBox";
 import { deleteFromSpaces, uploadToSpaces } from "../utils/uploadToSpaces";
 import { callBookedOf, emailCallBooked } from "../utils/onboardingEmails";
+import { notifyCallBooked } from "../utils/notifications";
 import { canAccessClient } from "../utils/clientAccess";
 
 // Onboarding, for someone who has no account yet. Nobody is signed in here, so these routes
@@ -328,7 +329,11 @@ export const updateMyOnboarding = asyncHandler(async (req: Request, res: Respons
 
   // They've just said they booked their onboarding call ("I've booked my call"): confirm it.
   // Not waited for, and sent once however often it is said again (utils/onboardingEmails.ts).
-  if (!wasBooked && callBookedOf(client)) void emailCallBooked(client);
+  // The team hears of it in their bell at once.
+  if (!wasBooked && callBookedOf(client)) {
+    void emailCallBooked(client);
+    void notifyCallBooked(client._id, login);
+  }
 
   return ApiResponse(res, 200, req.body.submit === true ? "Onboarding submitted" : "Onboarding saved", viewOf(client));
 });

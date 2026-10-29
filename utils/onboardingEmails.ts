@@ -18,15 +18,16 @@ const HOUR = 60 * 60 * 1000;
 // A page of the client portal, through signing in: whoever isn't signed in logs in first, and
 // lands on it after.
 const portalPage = (path: string) => `${env.clientPortalUrl}/sign-in?callbackUrl=${encodeURIComponent(path)}`;
+const LOGIN_URL = `${env.clientPortalUrl}/sign-in`;
 const FORM_URL = portalPage("/onboarding");
 // The onboarding page with its "Book your onboarding call" card open (client-portal: KickoffCallCard).
 const BOOK_URL = portalPage("/onboarding?book=1");
 
 const ON_THE_CALL = [
-  "A marketing specialist goes through your answers with you.",
-  "Anything still missing, you fill in together, so there's no need to finish the form first.",
-  "We collect what we need to get started, like logins, your logo and photos.",
-  "Together you plan your next steps.",
+  "Go over everything you filled out",
+  "Help you fill in anything that's missing",
+  "Collect everything we need to get started",
+  "Plan your next steps with you",
 ];
 
 export const callBookedOf = (client: Pick<IClient, "onboarding">) => client.onboarding?.kickoffCall?.booked === true;
@@ -89,14 +90,20 @@ export const emailCallBooked = async (client: IClient): Promise<void> => {
     );
     if (!claimed.modifiedCount) return;
 
+    // No date or time: the booking is on Google Calendar, which doesn't tell us.
     const sent = await send(client, {
       eyebrow: "Call booked",
       tone: "success",
-      title: "Your onboarding call is booked",
-      body: "Thank you for booking. The date, time and meeting link are in the calendar invite from Google Calendar in your inbox. Need a different time? You can reschedule from that invite.",
-      list: { title: "What happens on the call", items: ON_THE_CALL },
-      details: [["Company", client.companyName]],
-      button: { label: "Open your portal", url: FORM_URL },
+      title: "What to expect on your onboarding call",
+      body: [
+        formDoneOf(client)
+          ? "Thanks for filling out your onboarding form and booking your onboarding call. Here's what happens next."
+          : "Thanks for booking your onboarding call. Here's what happens next.",
+        "On your onboarding call, one of our marketing specialists will:",
+      ],
+      list: { title: "On the call", items: ON_THE_CALL },
+      closing: "If you skipped something or weren't sure of an answer, don't worry. We'll sort it out together on the call.",
+      signOff: ["Talk soon,", "Team BayShore"],
     });
     if (!sent) await Client.updateOne({ _id: client._id }, { $unset: { "onboardingEmails.callBookedSentAt": "" } });
   } catch (error) {
@@ -117,20 +124,22 @@ const REMIND_WITHIN = (REMINDER_HOURS[REMINDER_HOURS.length - 1] + 48) * HOUR;
 // At least this long between two reminders, even when both are overdue.
 const MIN_GAP = 24 * HOUR;
 
-const emailReminder = (client: IClient, number: number) => {
-  const formDone = formDoneOf(client);
-  return send(client, {
+const emailReminder = (client: IClient) =>
+  send(client, {
     eyebrow: "Onboarding",
     tone: "action",
-    title: number === 1 ? "Book your onboarding call. The form can wait." : "A quick reminder about your onboarding call",
-    body: formDone
-      ? "Thank you for filling in your onboarding form. The last step is your onboarding call: pick a time that suits you."
-      : "You haven't booked your onboarding call yet. There's no need to finish the form first: book a time, and a marketing specialist will go through it with you on the call and fill in the rest.",
-    list: { title: "On the call", items: ON_THE_CALL },
-    button: { label: "Book your onboarding call", url: BOOK_URL },
-    link: formDone ? undefined : { label: "Or carry on with your form", url: FORM_URL },
+    title: "Welcome to BayShore!",
+    body: [
+      "Your account has already been created using this email address. You can access it using the link below:",
+      { label: "Access Your Account", url: LOGIN_URL },
+      "We noticed that you haven't completed your onboarding process yet.",
+      "Having trouble with the form? No worries! You can simply schedule a call with one of our marketing specialists. We'll walk you through everything, answer your questions, and complete the onboarding together.",
+    ],
+    button: { label: "Schedule Your Onboarding Call", url: BOOK_URL },
+    link: { label: "Or Complete Your Onboarding Form", url: FORM_URL },
+    closing: "We're excited to get started and help your business grow!",
+    signOff: ["Best regards,", "Team BayShore"],
   });
-};
 
 // Sends the reminders that are due. Each is claimed on the record before it goes (and given back
 // if it can't), so none goes twice.
@@ -153,7 +162,7 @@ export const sendDueReminders = async () => {
         { $set: { "onboardingEmails.reminders": index + 1, "onboardingEmails.lastReminderAt": new Date() } }
       );
       if (!claimed.modifiedCount) continue;
-      const sent = await emailReminder(client, index + 1);
+      const sent = await emailReminder(client);
       if (!sent) {
         await Client.updateOne(
           { _id: client._id },

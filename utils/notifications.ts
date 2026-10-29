@@ -66,6 +66,8 @@ const EMAIL_LOOK: Record<NotificationType, { eyebrow: string; tone: EmailTone; b
   message: { eyebrow: "New message", tone: "info", button: "Read the message" },
   report_published: { eyebrow: "New report", tone: "success", button: "Read your report" },
   project_created: { eyebrow: "New project", tone: "action", button: "View the project" },
+  client_signed_up: { eyebrow: "New client", tone: "success", button: "Open the client" },
+  onboarding_call_booked: { eyebrow: "Call booked", tone: "success", button: "Open the onboarding" },
 };
 
 // The same notification by email, to those of the recipients who have an address. Clients get
@@ -318,6 +320,58 @@ export const forgetContentNotifications = quietly(async (contentId: Id) => {
 });
 
 // ── Comments on the onboarding form ──────────────────────────────────────────
+
+// The staff on a client — or, when nobody is on it yet (one who signed up themselves), those
+// who manage clients.
+const staffOrManagersOf = async (clientId: Id, except?: Id): Promise<{ recipients: Id[]; company: string }> => {
+  const client = await Client.findById(clientId).select("companyName accountManager team createdBy").lean();
+  const ids = [...new Set([client?.accountManager, ...(client?.team ?? []), client?.createdBy].filter((id): id is Id => Boolean(id)).map(String))].filter(
+    (id) => id !== String(except)
+  );
+  let recipients: Id[] = await User.find({ _id: { $in: ids }, status: "active", role: { $ne: "client" } }).distinct("_id");
+  if (!recipients.length) recipients = await User.find({ role: { $in: ["manager", "admin", "superadmin"] }, status: "active" }).distinct("_id");
+  return { recipients, company: client?.companyName ?? "A client" };
+};
+
+// Something the client did on their onboarding, to the team: in the bell at once (no email).
+const notifyTeamOfClient = async (clientId: Id, actor: IUser, notification: { type: NotificationType; title: (company: string) => string; body?: string; link: string }) => {
+  const { recipients, company } = await staffOrManagersOf(clientId, actor._id);
+  if (!recipients.length) return;
+  await Notification.insertMany(
+    recipients.map((recipient) => ({
+      recipient,
+      type: notification.type,
+      title: clip(notification.title(company), NOTIFICATION_TITLE_MAX_LENGTH),
+      body: notification.body ? clip(notification.body, NOTIFICATION_BODY_MAX_LENGTH) : undefined,
+      link: notification.link,
+      actor: actor._id,
+      actorName: actor.fullName,
+      client: clientId,
+      pieces: 1,
+    }))
+  );
+  emitToUsers(recipients.map(String), "notifications:new", { type: notification.type, client: String(clientId) });
+};
+
+// A client made their own account (the front page of the client portal).
+export const notifyClientSignedUp = quietly(async (clientId: Id, actor: IUser) => {
+  await notifyTeamOfClient(clientId, actor, {
+    type: "client_signed_up",
+    title: (company) => `${company} created a client account`,
+    body: [actor.fullName, actor.email].filter(Boolean).join(" · "),
+    link: `/clients/${clientId}`,
+  });
+});
+
+// A client said they booked their onboarding call ("I've booked my call").
+export const notifyCallBooked = quietly(async (clientId: Id, actor: IUser) => {
+  await notifyTeamOfClient(clientId, actor, {
+    type: "onboarding_call_booked",
+    title: (company) => `${company} booked their onboarding call`,
+    body: "The date and time are in the Google Calendar booking.",
+    link: `/clients/${clientId}/onboarding`,
+  });
+});
 
 // A comment (or a reply) on a step of the client's onboarding form, to the other side: from the
 // client, to the staff on them; from the team, to the client's logins. Their bell updates at once.

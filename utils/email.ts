@@ -63,8 +63,8 @@ export type ActivityEmail = {
   // A word or two over the headline: "Content", "Monthly report"…
   eyebrow?: string;
   tone?: EmailTone;
-  // A line or two about it.
-  body?: string;
+  // A line or two about it — or several paragraphs, with a link of its own between them.
+  body?: string | (string | { label: string; url: string })[];
   // Facts about it, one per row: "Company — Carter Injury Law".
   details?: [label: string, value: string | undefined][];
   // A short list under a heading: the steps to take, or what will happen. Numbered when `numbered`.
@@ -73,13 +73,20 @@ export type ActivityEmail = {
   button?: { label: string; url: string };
   // A second, quieter way on, as a link under the button.
   link?: { label: string; url: string };
+  // A last line, under the button.
+  closing?: string;
+  // In place of "Thank you, / The BayShore Communication team".
+  signOff?: [greeting: string, from: string];
   audience?: EmailAudience;
 };
 
 // Every email the portals send, in one look: a dark band with the name, a gold rule, a small
 // coloured label, the headline, a line about it, the facts in a box, one button — and why it
 // was sent. Tables and inline styles only, the way email clients need them.
-export const activityEmail = ({ name, title, eyebrow, tone = "action", body, details = [], list, button, link, audience = "client" }: ActivityEmail): Omit<Email, "to"> => {
+export const activityEmail = ({ name, title, eyebrow, tone = "action", body, details = [], list, button, link, closing, signOff, audience = "client" }: ActivityEmail): Omit<Email, "to"> => {
+  const parts = body === undefined ? [] : Array.isArray(body) ? body : [body];
+  const preview = parts.find((part): part is string => typeof part === "string") ?? title;
+  const [greeting, from] = signOff ?? ["Thank you,", `The ${BRAND} team`];
   const firstName = name.trim().split(/\s+/)[0] || "there";
   const rows = details.filter((row): row is [string, string] => Boolean(row[1]?.trim()));
   const colors = TONES[tone];
@@ -93,13 +100,14 @@ export const activityEmail = ({ name, title, eyebrow, tone = "action", body, det
     `Hi ${firstName},`,
     "",
     title,
-    ...(body ? ["", body] : []),
+    ...parts.flatMap((part) => ["", typeof part === "string" ? part : `${part.label}: ${part.url}`]),
     ...(rows.length ? ["", ...rows.map(([label, value]) => `${label}: ${value}`)] : []),
     ...(list?.items.length ? ["", `${list.title}:`, ...list.items.map((item, index) => `${list.numbered ? `${index + 1}.` : "-"} ${item}`)] : []),
     ...(button ? ["", `${button.label}: ${button.url}`] : []),
     ...(link ? [`${link.label}: ${link.url}`] : []),
+    ...(closing ? ["", closing] : []),
     "",
-    `— ${BRAND}`,
+    ...(signOff ? [greeting, from] : [`— ${BRAND}`]),
     "",
     why,
   ].join("\n");
@@ -114,7 +122,7 @@ export const activityEmail = ({ name, title, eyebrow, tone = "action", body, det
   </head>
   <body style="margin:0;padding:0;background:#eef1f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1f2530;-webkit-font-smoothing:antialiased;">
     <!-- The line inboxes show beside the subject. -->
-    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${escapeHtml(body ?? title)}</div>
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${escapeHtml(preview)}</div>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef1f5;padding:36px 14px;">
       <tr>
         <td align="center">
@@ -137,7 +145,13 @@ export const activityEmail = ({ name, title, eyebrow, tone = "action", body, det
                 ${eyebrow ? `<span style="display:inline-block;padding:5px 11px;border-radius:999px;background:${colors.background};color:${colors.text};font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;">${escapeHtml(eyebrow)}</span>` : ""}
                 <p style="margin:${eyebrow ? "16px" : "0"} 0 0;font-size:14px;line-height:1.6;color:#6b7280;">Hi ${escapeHtml(firstName)},</p>
                 <h1 style="margin:6px 0 0;font-size:22px;line-height:1.35;font-weight:700;color:#0b1522;">${escapeHtml(title)}</h1>
-                ${body ? `<p style="margin:12px 0 0;font-size:15px;line-height:1.65;color:#374151;">${escapeHtml(body)}</p>` : ""}
+                ${parts
+                  .map((part) =>
+                    typeof part === "string"
+                      ? `<p style="margin:12px 0 0;font-size:15px;line-height:1.65;color:#374151;">${escapeHtml(part)}</p>`
+                      : `<p style="margin:12px 0 0;font-size:15px;line-height:1.65;"><a href="${escapeHtml(part.url)}" style="color:#2f5fd8;font-weight:600;text-decoration:none;">${escapeHtml(part.label)} &rarr;</a></p>`
+                  )
+                  .join("")}
               </td>
             </tr>
             ${
@@ -194,7 +208,8 @@ export const activityEmail = ({ name, title, eyebrow, tone = "action", body, det
             }
             <tr>
               <td style="padding:28px 30px 30px;">
-                <p style="margin:0;font-size:14px;line-height:1.6;color:#374151;">Thank you,<br /><strong style="color:#0b1522;">The ${BRAND} team</strong></p>
+                ${closing ? `<p style="margin:0 0 16px;font-size:15px;line-height:1.65;color:#374151;">${escapeHtml(closing)}</p>` : ""}
+                <p style="margin:0;font-size:14px;line-height:1.6;color:#374151;">${escapeHtml(greeting)}<br /><strong style="color:#0b1522;">${escapeHtml(from)}</strong></p>
               </td>
             </tr>
           </table>
