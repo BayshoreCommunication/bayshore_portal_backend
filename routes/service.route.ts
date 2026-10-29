@@ -26,7 +26,7 @@ import {
   serviceOrderSessionRule,
 } from "../validators/service.validator";
 import { SERVICE_READ_ROLES, SERVICE_MANAGE_ROLES, SERVICE_ASSIGN_ROLES } from "../utils/serviceAccess";
-import { requireServicesUnlocked as unlocked } from "../utils/serviceLock";
+import { requireServicesCode as unlocked } from "../utils/serviceLock";
 
 const router = Router();
 

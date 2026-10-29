@@ -63,7 +63,14 @@ export const passIsGood = (user: IUser, token: unknown) => {
   return same(Buffer.from(signature), Buffer.from(signOf(`${id}.${expiresAt}`, code)));
 };
 
-// On the team's services routes and the password routes, after protect: no good pass, no answer.
+// Whether Services itself asks for the code. Off for now: Services opens as before, and only the
+// password routes ask (company-portal: lib/servicesPass.ts → SERVICES_NEED_CODE, kept in step).
+export const SERVICES_NEED_CODE = false;
+
+// On the team's services routes: the code, when Services asks for it.
+export const requireServicesCode = (req: Request, res: Response, next: NextFunction) => (SERVICES_NEED_CODE ? requireServicesUnlocked(req, res, next) : next());
+
+// On the password routes (and the services routes, when on), after protect: no good pass, no answer.
 export const requireServicesUnlocked = (req: Request, _res: Response, next: NextFunction) => {
   if (!passIsGood(req.user!, req.headers[SERVICE_UNLOCK_HEADER])) {
     return next(new ApiError(SERVICES_LOCKED, canUnlockServices(req.user!) ? "Enter your security code" : "You don't have access to this"));
