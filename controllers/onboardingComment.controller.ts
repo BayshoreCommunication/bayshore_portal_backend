@@ -51,15 +51,19 @@ const STEP_TITLES: Record<string, string> = {
 // After a comment or a reply is saved: live to everyone on the client's onboarding (and their
 // conversation), and a notification to the other side — as a comment on a piece is.
 const spread = async (comment: IOnboardingComment, actor: IUser, side: "client" | "team", said: { text: string; files: IOnboardingComment["files"] }, reply = false) => {
-  // A new comment on an item: from the team, it asks the client to update it — back to do, and
-  // no longer approved; from the client, it answers that.
-  if (comment.item && !reply) {
-    const items = askedItemsOf(comment.item);
+  // A new comment from the team asks the client to update what it is on — back to do, approved
+  // or not: an item (no longer approved), or the whole step. One from the client answers what is
+  // asked on that step.
+  if (!reply) {
+    const items = comment.item ? askedItemsOf(comment.item) : [];
+    const stepAsk = `step:${comment.step}`;
     await Client.updateOne(
       { _id: comment.client, onboarding: { $ne: null } },
       side === "team"
-        ? { $addToSet: { "onboarding.updateAsked": { $each: items } }, $pull: { "onboarding.approved": { $in: items } } }
-        : { $pull: { "onboarding.updateAsked": { $in: items } } }
+        ? comment.item
+          ? { $addToSet: { "onboarding.updateAsked": { $each: items } }, $pull: { "onboarding.approved": { $in: items } } }
+          : { $addToSet: { "onboarding.updateAsked": stepAsk } }
+        : { $pull: { "onboarding.updateAsked": { $in: [...items, stepAsk] } } }
     );
   }
   emitToClient(String(comment.client), "onboarding:comment", viewOf(comment));

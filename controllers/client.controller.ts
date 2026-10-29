@@ -9,6 +9,7 @@ import { ApiError } from "../utils/ApiError";
 import { clientScopeFor as scopeFor } from "../utils/clientAccess";
 import { emailClientAdded, emailPortalLogin } from "../utils/activityEmails";
 import { notifyOnboardingApproved } from "../utils/notifications";
+import { stepOfItem } from "../utils/onboardingUpdates";
 import { unseal } from "../utils/secretBox";
 import { removeClientData } from "../utils/clientCleanup";
 
@@ -80,10 +81,14 @@ const applyControls = (client: IClient, controls: unknown) => {
     if (!Array.isArray(sent[list])) continue;
     const ids = Array.from(new Set((sent[list] as unknown[]).filter((id): id is string => typeof id === "string").map((id) => id.trim()).filter(Boolean)));
     if (list === "approved" && !ids.length && !client.get("onboarding.approved")?.length) continue;
+    const before: string[] = client.get(`onboarding.${list}`) ?? [];
     client.set(`onboarding.${list}`, ids);
-    // An item approved needs no more updating.
+    if (list !== "approved") continue;
+    // An item approved needs no more updating — and one newly approved answers what was asked on its step.
+    const newly = ids.filter((id) => !before.includes(id));
+    const done = new Set([...ids, ...newly.map((id) => `step:${stepOfItem(id)}`)]);
     const asked: string[] = client.get("onboarding.updateAsked") ?? [];
-    if (list === "approved" && asked.some((id) => ids.includes(id))) client.set("onboarding.updateAsked", asked.filter((id) => !ids.includes(id)));
+    if (asked.some((id) => done.has(id))) client.set("onboarding.updateAsked", asked.filter((id) => !done.has(id)));
   }
 };
 
