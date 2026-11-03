@@ -3,12 +3,18 @@ import type { Request, Response } from "express";
 import type { FilterQuery } from "mongoose";
 import {
   Client,
+  ONBOARDING_CUSTOM_ACCOUNT_KEY,
+  ONBOARDING_CUSTOM_ACCOUNTS_MAX,
+  ONBOARDING_CUSTOM_SECTIONS,
+  customSectionPath,
+  type OnboardingCustomSection,
   ONBOARDING_MEDIA_KINDS,
   ONBOARDING_MEDIA_MAX_FILES,
   ONBOARDING_MEDIA_MAX_FILE_SIZE,
   ONBOARDING_MEDIA_MIME_TYPES,
   ONBOARDING_STATUSES,
   type IClient,
+  type IOnboardingCustomAccount,
   type IOnboardingFile,
   type OnboardingMediaKind,
   type OnboardingUploadKind,
@@ -25,6 +31,7 @@ import { callBookedOf, emailCallBooked } from "../utils/onboardingEmails";
 import { notifyCallBooked } from "../utils/notifications";
 import { answersOfItems, askedItemsOf } from "../utils/onboardingUpdates";
 import { canAccessClient } from "../utils/clientAccess";
+import { emitToClient } from "../realtime/messagesRealtime";
 
 // Onboarding, for someone who has no account yet. Nobody is signed in here, so these routes
 // are open — and what keeps one visitor's answers from another is a key:
@@ -102,9 +109,10 @@ const withPlatformPassword = (client: IClient, section: string, incoming: unknow
 // The answers as they go back to whoever gave them: a stored password is left out, with only
 // the fact that there is one (`loginPasswordSet`) in its place.
 const withoutPasswords = (client: IClient) => {
-  const onboarding = client.toObject().onboarding as (Plain & IClient["onboarding"]) | undefined;
+  // The team's own social accounts are kept as a map: as a plain object, to go out as JSON.
+  const onboarding = client.toObject({ flattenMaps: true }).onboarding as (Plain & IClient["onboarding"]) | undefined;
   if (!onboarding) return onboarding;
-  for (const section of ACCOUNT_SECTIONS) {
+  for (const section of [...ACCOUNT_SECTIONS, ...ONBOARDING_CUSTOM_SECTIONS.map(customSectionPath)]) {
     const accounts = onboarding[section];
     if (!isPlainObject(accounts)) continue;
     for (const account of Object.values(accounts)) {
@@ -155,6 +163,31 @@ const withStoredFiles = (client: IClient, incoming: unknown): unknown => {
   );
 };
 
+// The answers about the accounts the team added (`answers.socialCustom`, `answers.googleCustom`, by key). Only
+// the ones on the record are answered, and their names stay the team's. A password is kept as
+// for any other account: sealed when typed, kept while its login is what is shared.
+const CUSTOM_ANSWER_FIELDS = ["has", "link", "access", "accessGiven", "needsHelp", "wantsCreated", "loginUsername"] as const;
+const applyCustomAnswers = (client: IClient, section: OnboardingCustomSection, incoming: unknown) => {
+  const accounts = client.onboarding?.[customSectionPath(section)];
+  if (!isPlainObject(incoming) || !accounts) return;
+  for (const [key, answer] of Object.entries(incoming)) {
+    const stored = accounts.get(key);
+    if (!stored || !isPlainObject(answer)) continue;
+    const picked: Plain = Object.fromEntries(CUSTOM_ANSWER_FIELDS.filter((field) => answer[field] !== undefined).map((field) => [field, answer[field]]));
+    if (picked.access === "secure") {
+      const typed = answer.loginPassword;
+      if (typeof typed === "string" && typed !== "") {
+        if (typed.length > PASSWORD_MAX_LENGTH) throw new ApiError(422, `A password cannot exceed ${PASSWORD_MAX_LENGTH} characters`);
+        picked.loginPassword = seal(typed);
+      } else if (stored.loginPassword) {
+        picked.loginPassword = stored.loginPassword;
+      }
+    }
+    // Through the map itself: a dotted path doesn't reach into it.
+    accounts.set(key, { name: stored.name, ...picked } as IOnboardingCustomAccount);
+  }
+};
+
 // Puts the sections that were sent (under `answers`) onto the record. A section replaces what
 // was there for it; one left out is untouched. Only the form's own sections are read — a
 // visitor can't reach the rest of the client record (its status, its team) through here.
@@ -186,6 +219,7 @@ const applyAnswers = (client: IClient, body: Plain, byTeam = false) => {
               : sent
     );
   }
+  for (const section of ONBOARDING_CUSTOM_SECTIONS) applyCustomAnswers(client, section, answers[customSectionPath(section)]);
   if (byTeam) return;
   // `submit: true` hands it in; `submit: false` takes it back to keep working on it.
   if (body.submit === true) {
@@ -514,9 +548,15 @@ export const revealClientOnboardingPassword = asyncHandler(async (req: Request, 
   const login = String(req.query.login ?? "");
   if (!LOGIN_PATH.test(login)) throw new ApiError(422, "Unknown login");
   if (!(await canAccessClient(req.user!, req.params.clientId))) throw new ApiError(404, "Client not found");
-  const client = await Client.findById(req.params.clientId).select(`onboarding.${login}.loginPassword`);
+  // An account the team added is kept apart from the others of its kind ("social.customAbc…" in
+  // onboarding.socialCustom, "google.customAbc…" in onboarding.googleCustom).
+  const [section, key = ""] = login.split(".");
+  const custom = (ONBOARDING_CUSTOM_SECTIONS as readonly string[]).includes(section) && ONBOARDING_CUSTOM_ACCOUNT_KEY.test(key);
+  const kept = custom ? `onboarding.${customSectionPath(section as OnboardingCustomSection)}` : "";
+  const path = custom ? `${kept}.${key}.loginPassword` : `onboarding.${login}.loginPassword`;
+  const client = await Client.findById(req.params.clientId).select(custom ? kept : path);
   if (!client) throw new ApiError(404, "Client not found");
-  const sealed: unknown = client.get(`onboarding.${login}.loginPassword`);
+  const sealed: unknown = client.get(path);
   if (typeof sealed !== "string" || !sealed) throw new ApiError(404, "No password saved for this login");
   try {
     return ApiResponse(res, 200, "Password", { password: unseal(sealed) });
@@ -524,4 +564,54 @@ export const revealClientOnboardingPassword = asyncHandler(async (req: Request, 
     // Sealed with another key, or not ours at all.
     throw new ApiError(410, "This password can't be read any more — ask the client for it again");
   }
+});
+
+// ── Accounts the team adds (social, Google) ──────────────────────────────────
+
+// Letters only, as the team's ticks take ("social.customQwErTyUi").
+const LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const newCustomKey = () => `custom${Array.from(crypto.randomBytes(8), (byte) => LETTERS[byte % LETTERS.length]).join("")}`;
+
+// The client's form hears that what it asks has changed, and loads it again.
+const tellClientForm = (clientId: unknown) => emitToClient(String(clientId), "onboarding:controls", {});
+
+// POST /onboarding/clients/:clientId/custom-accounts — an account of the team's own, asked on the
+// client's form like the others: on the Social media step ("Discord"), or with `section: "google"`
+// on the Google step.
+export const addClientCustomAccount = asyncHandler(async (req: Request, res: Response) => {
+  const client = await findStaffClient(req);
+  const name = String(req.body.name).trim();
+  const section: OnboardingCustomSection = req.body.section === "google" ? "google" : "social";
+  const kept = customSectionPath(section);
+  const accounts = client.onboarding?.[kept];
+  if (accounts && accounts.size >= ONBOARDING_CUSTOM_ACCOUNTS_MAX) throw new ApiError(409, `A client can have up to ${ONBOARDING_CUSTOM_ACCOUNTS_MAX} accounts of the team's own`);
+  if (accounts && [...accounts.values()].some((account) => account.name.toLowerCase() === name.toLowerCase())) {
+    throw new ApiError(409, `${name} is on this client's form already`);
+  }
+  const key = newCustomKey();
+  if (!client.onboarding) client.set("onboarding", {});
+  if (!client.onboarding?.[kept]) client.set(`onboarding.${kept}`, {});
+  client.onboarding![kept]!.set(key, { name } as IOnboardingCustomAccount);
+  await client.save();
+  tellClientForm(client._id);
+  return ApiResponse(res, 201, `${name} added`, { key, name, section });
+});
+
+// DELETE /onboarding/clients/:clientId/custom-accounts/:key — taken off the form, with its
+// answers, and out of the team's ticks and asks.
+export const removeClientCustomAccount = asyncHandler(async (req: Request, res: Response) => {
+  const client = await findStaffClient(req);
+  const key = req.params.key;
+  // Keys are random, so one is in one step's accounts only.
+  const section = ONBOARDING_CUSTOM_SECTIONS.find((each) => client.onboarding?.[customSectionPath(each)]?.has(key));
+  if (!section) throw new ApiError(404, "There is no such account on this client's form");
+  client.onboarding![customSectionPath(section)]!.delete(key);
+  const item = `${section}.${key}`;
+  for (const list of ["notNeeded", "approved", "updateAsked"] as const) {
+    const ids: string[] | undefined = client.get(`onboarding.${list}`);
+    if (ids?.includes(item)) client.set(`onboarding.${list}`, ids.filter((id) => id !== item));
+  }
+  await client.save();
+  tellClientForm(client._id);
+  return ApiResponse(res, 200, "Account taken off the form");
 });

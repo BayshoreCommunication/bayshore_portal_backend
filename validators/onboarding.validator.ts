@@ -1,5 +1,5 @@
 import { body, header, param, query, type ValidationChain } from "express-validator";
-import { ONBOARDING_STATUSES, ONBOARDING_UPLOAD_KINDS } from "../models/client.model";
+import { ONBOARDING_CUSTOM_ACCOUNT_KEY, ONBOARDING_CUSTOM_ACCOUNT_NAME_MAX_LENGTH, ONBOARDING_CUSTOM_SECTIONS, ONBOARDING_STATUSES, ONBOARDING_UPLOAD_KINDS } from "../models/client.model";
 import { PHONE_REGEX } from "../models/user.model";
 import {
   ONBOARDING_COMMENT_ITEM_LABEL_MAX_LENGTH,
@@ -29,6 +29,8 @@ export const onboardingKeyRule: ValidationChain[] = [
 export const answerRules: ValidationChain[] = [
   body("answers").optional().isObject().withMessage("answers must be an object"),
   ...ONBOARDING_SECTIONS.map((section) => body(`answers.${section}`).optional().isObject().withMessage(`answers.${section} must be an object`)),
+  // The answers about the accounts the team added for this client (social, Google), by their key.
+  ...ONBOARDING_CUSTOM_SECTIONS.map((section) => body(`answers.${section}Custom`).optional().isObject().withMessage(`answers.${section}Custom must be an object`)),
   body("submit").optional().isBoolean().withMessage("submit must be true or false").toBoolean(),
 ];
 
@@ -88,6 +90,23 @@ export const addOnboardingCommentRules: ValidationChain[] = [
 ];
 
 export const onboardingCommentsClientRule: ValidationChain[] = [param("clientId").isMongoId().withMessage("Invalid client id")];
+
+// The team adds an account of their own to a client's form ("Discord" on the Social media step,
+// or one on the Google step), or takes one off.
+export const addCustomAccountRules: ValidationChain[] = [
+  ...onboardingCommentsClientRule,
+  body("section").optional().isIn([...ONBOARDING_CUSTOM_SECTIONS]).withMessage(`section must be one of: ${ONBOARDING_CUSTOM_SECTIONS.join(", ")}`),
+  body("name")
+    .isString()
+    .withMessage("Give the account a name")
+    .trim()
+    .isLength({ min: 1, max: ONBOARDING_CUSTOM_ACCOUNT_NAME_MAX_LENGTH })
+    .withMessage(`The name must be 1–${ONBOARDING_CUSTOM_ACCOUNT_NAME_MAX_LENGTH} characters`),
+];
+export const removeCustomAccountRules: ValidationChain[] = [
+  ...onboardingCommentsClientRule,
+  param("key").matches(ONBOARDING_CUSTOM_ACCOUNT_KEY).withMessage("Unknown account"),
+];
 
 export const replyOnboardingCommentRules: ValidationChain[] = [
   ...onboardingCommentsClientRule,

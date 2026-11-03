@@ -18,8 +18,8 @@ const STEP_PATHS: Record<string, string[]> = {
   domain: ["onboarding.domain", "onboarding.hosting", "onboarding.cms"],
   email: ["onboarding.email"],
   logo: ["onboarding.logo"],
-  google: ["onboarding.google"],
-  social: ["onboarding.social"],
+  google: ["onboarding.google", "onboarding.googleCustom"],
+  social: ["onboarding.social", "onboarding.socialCustom"],
   media: ["onboarding.media"],
 };
 
@@ -30,9 +30,16 @@ export const stepOfItem = (item: string) => {
   return STEP_OF_SECTION[section] ?? section;
 };
 
-// Where an item's (or a step's) answers sit on the client record.
+// Where an item's (or a step's) answers sit on the client record. An account the team added
+// ("social.customAbc…", "google.customAbc…") is kept apart from the others (onboarding.socialCustom…).
 const pathsOf = (item: string) =>
-  item.startsWith("step:") ? (STEP_PATHS[item.slice("step:".length)] ?? []) : item === "contact" ? CONTACT_PATHS : [`onboarding.${item}`];
+  item.startsWith("step:")
+    ? (STEP_PATHS[item.slice("step:".length)] ?? [])
+    : item === "contact"
+      ? CONTACT_PATHS
+      : /^(social|google)\.custom/.test(item)
+        ? [`onboarding.${item.split(".")[0]}Custom.${item.split(".")[1]}`]
+        : [`onboarding.${item}`];
 
 // The answers of each item, as text, to tell afterwards whether they changed.
 export const answersOfItems = (client: IClient, items: string[]) =>

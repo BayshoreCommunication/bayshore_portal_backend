@@ -13,6 +13,7 @@ import { plansOf, stampPlans } from "../utils/clientServicePlans";
 import { stepOfItem } from "../utils/onboardingUpdates";
 import { unseal } from "../utils/secretBox";
 import { removeClientData } from "../utils/clientCleanup";
+import { emitToClient } from "../realtime/messagesRealtime";
 
 // The roles that manage clients — the only ones shown a client's portal password.
 const CAN_SEE_PASSWORD: string[] = ["assistant_manager", "manager", "admin", "superadmin"];
@@ -432,6 +433,8 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   if (password && loginUser) await emailPortalLogin(client, password, loginCreated);
   // Items the team just approved on the client's onboarding: the client hears at once.
   if (newlyApproved) await notifyOnboardingApproved(client._id, requester, newlyApproved);
+  // What the client's form asks (or what is approved on it) may have changed: it loads it again.
+  if (req.body.onboardingControls !== undefined) emitToClient(String(client._id), "onboarding:controls", {});
   // A service added, finished, changed or taken off: the client hears at once.
   if (serviceChanges || declined.length) await notifyServicesUpdated(client._id, requester, { ...(serviceChanges ?? { added: [], done: [], changed: [], removed: [] }), declined });
 

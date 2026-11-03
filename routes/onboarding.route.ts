@@ -7,6 +7,8 @@ import {
   listOnboardingRequests,
   removeMyOnboardingMedia,
   updateClientOnboarding,
+  addClientCustomAccount,
+  removeClientCustomAccount,
   revealClientOnboardingPassword,
   uploadClientOnboardingMedia,
   removeClientOnboardingMedia,
@@ -22,6 +24,8 @@ import { requireServicesUnlocked as unlocked } from "../utils/serviceLock";
 import { validate } from "../middleware/validate";
 import { USER_ROLES, type UserRole } from "../models/user.model";
 import {
+  addCustomAccountRules,
+  removeCustomAccountRules,
   addOnboardingCommentRules,
   answerRules,
   listOnboardingRequestsRules,
@@ -364,6 +368,36 @@ router.post("/me/comments", protect, authorize("client"), commentUpload, addOnbo
  *         description: No such client, or one the caller can't see
  */
 router.patch("/clients/:clientId", protect, authorize(...CAN_MANAGE), onboardingCommentsClientRule, answerRules, validate, updateClientOnboarding);
+
+/**
+ * @swagger
+ * /onboarding/clients/{clientId}/custom-accounts:
+ *   post:
+ *     summary: Staff — add an account of the team's own to a client's onboarding form (Social media or Google step)
+ *     description: "`name` is what the client sees (\"Discord\"). `section` is social (default) or google: the step it is asked on like the others — an invite to our access email, or its login. It is the item `<section>.<key>` for the team's ticks and comments. The client's form hears of it at once (onboarding:controls)."
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       201:
+ *         description: The account's key and name
+ *       409:
+ *         description: There is one of that name already, or too many
+ * /onboarding/clients/{clientId}/custom-accounts/{key}:
+ *   delete:
+ *     summary: Staff — take an account the team added off a client's onboarding form
+ *     description: Its answers go with it, and it leaves the team's ticks and asks.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Taken off
+ *       404:
+ *         description: No such account on this client
+ */
+router.post("/clients/:clientId/custom-accounts", protect, authorize(...CAN_MANAGE), addCustomAccountRules, validate, addClientCustomAccount);
+router.delete("/clients/:clientId/custom-accounts/:key", protect, authorize(...CAN_MANAGE), removeCustomAccountRules, validate, removeClientCustomAccount);
 
 /**
  * @swagger

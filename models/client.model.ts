@@ -114,6 +114,15 @@ export const ONBOARDING_UPLOAD_MAX_FILES = 10;
 // many of them a list can hold.
 export const ONBOARDING_CONTROL_ID_MAX_LENGTH = 60;
 export const ONBOARDING_CONTROL_MAX_IDS = 100;
+// Social accounts the team adds to one client's form ("Discord"): a name of theirs, kept under a
+// key of letters only ("customQwErTyUi") — the item is "social.<key>" to the portals.
+export const ONBOARDING_CUSTOM_ACCOUNT_KEY = /^custom[A-Za-z]{8}$/;
+// The steps the team can add accounts to, and where each keeps them (onboarding.socialCustom…).
+export const ONBOARDING_CUSTOM_SECTIONS = ["social", "google"] as const;
+export type OnboardingCustomSection = (typeof ONBOARDING_CUSTOM_SECTIONS)[number];
+export const customSectionPath = (section: OnboardingCustomSection) => `${section}Custom` as const;
+export const ONBOARDING_CUSTOM_ACCOUNT_NAME_MAX_LENGTH = 60;
+export const ONBOARDING_CUSTOM_ACCOUNTS_MAX = 20;
 
 export const ONBOARDING_TEXT_MAX_LENGTH = 300;
 export const ONBOARDING_LONG_TEXT_MAX_LENGTH = 2000;
@@ -156,6 +165,11 @@ export interface IOnboardingAccount {
   // in with, and its password. The password is sealed (utils/secretBox.ts) — never as typed.
   loginUsername?: string;
   loginPassword?: string;
+}
+
+// A social account the team added to the client's form, with the client's answers about it.
+export interface IOnboardingCustomAccount extends IOnboardingAccount {
+  name: string;
 }
 
 // One kind of photos or videos.
@@ -312,6 +326,11 @@ export interface IClientOnboarding {
     // The ad account behind Facebook and Instagram ads. (Google Ads is `google.ads`.)
     metaAds?: IOnboardingAccount;
   };
+  // The team's own social accounts for this client ("Discord"), by key (ONBOARDING_CUSTOM_ACCOUNT_KEY),
+  // in the order they were added. Asked on the Social media step like the others.
+  socialCustom?: Map<string, IOnboardingCustomAccount>;
+  // The same for Google accounts ("Google Merchant Center"), on the Google step ("google.<key>").
+  googleCustom?: Map<string, IOnboardingCustomAccount>;
 
   media?: {
     professionalPhotos?: IOnboardingMedia;
@@ -722,6 +741,14 @@ const onboardingAccountSchema = new Schema<IOnboardingAccount>(
   { _id: false }
 );
 
+const onboardingCustomAccountSchema = new Schema<IOnboardingCustomAccount>(
+  {
+    ...onboardingAccountSchema.obj,
+    name: { type: String, required: true, trim: true, maxlength: ONBOARDING_CUSTOM_ACCOUNT_NAME_MAX_LENGTH },
+  },
+  { _id: false }
+);
+
 const onboardingMediaSchema = new Schema<IOnboardingMedia>(
   {
     mode: { type: String, enum: ONBOARDING_MEDIA_MODES },
@@ -894,6 +921,9 @@ const onboardingSchema = new Schema<IClientOnboarding>(
         { _id: false }
       ),
     },
+
+    socialCustom: { type: Map, of: onboardingCustomAccountSchema, default: undefined },
+    googleCustom: { type: Map, of: onboardingCustomAccountSchema, default: undefined },
 
     media: {
       type: new Schema(
