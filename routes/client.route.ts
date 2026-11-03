@@ -6,6 +6,7 @@ import {
   getClientPortalPassword,
   getMyPortal,
   updateClient,
+  updateClientMessages,
   deleteClient,
 } from "../controllers/client.controller";
 import { protect, authorize } from "../middleware/auth";
@@ -13,6 +14,7 @@ import { validate } from "../middleware/validate";
 import { USER_ROLES, type UserRole } from "../models/user.model";
 import {
   clientIdRule,
+  clientMessagesRules,
   createClientRules,
   updateClientRules,
   listClientsRules,
@@ -362,6 +364,23 @@ router.get("/:id", protect, authorize(...STAFF_ROLES), clientIdRule, validate, g
  */
 router.get("/:id/portal-password", protect, authorize(...CAN_MANAGE), unlocked, clientIdRule, validate, getClientPortalPassword);
 router.patch("/:id", protect, authorize(...CAN_MANAGE), clientIdRule, updateClientRules, validate, updateClient);
+
+/**
+ * @swagger
+ * /clients/{id}/messages:
+ *   patch:
+ *     summary: Staff (managers) — choose which system messages one client is sent
+ *     description: "`off` is every message switched off for this client, by message and channel — e.g. message.email, services_updated.bell (CLIENT_MESSAGE_SWITCHES). An empty list sends them all. The client's record carries it as `messagesOff`."
+ *     tags: [Clients]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: "{ messagesOff }"
+ *       404:
+ *         description: No such client, or one the caller can't see
+ */
+router.patch("/:id/messages", protect, authorize(...CAN_MANAGE), clientMessagesRules, validate, updateClientMessages);
 router.delete("/:id", protect, authorize(...CAN_DELETE), clientIdRule, validate, deleteClient);
 
 export default router;

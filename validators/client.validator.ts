@@ -1,10 +1,17 @@
 import { body, param, query, type ValidationChain } from "express-validator";
-import { CLIENT_NOTES_MAX_LENGTH, CLIENT_PORTAL_MENUS, CLIENT_STATUSES, ONBOARDING_CONTROL_ID_MAX_LENGTH, ONBOARDING_CONTROL_MAX_IDS } from "../models/client.model";
+import { CLIENT_MESSAGE_SWITCHES, CLIENT_NOTES_MAX_LENGTH, CLIENT_PORTAL_MENUS, CLIENT_STATUSES, ONBOARDING_CONTROL_ID_MAX_LENGTH, ONBOARDING_CONTROL_MAX_IDS } from "../models/client.model";
 import { PHONE_REGEX } from "../models/user.model";
 import { normalizePhone } from "../utils/phone";
 
 export const clientIdRule: ValidationChain[] = [
   param("id").isMongoId().withMessage("Invalid client id"),
+];
+
+// The system messages switched off for one client ("message.email"), the whole list.
+export const clientMessagesRules: ValidationChain[] = [
+  ...clientIdRule,
+  body("off").isArray({ max: CLIENT_MESSAGE_SWITCHES.length }).withMessage("off must be a list of messages"),
+  body("off.*").isIn(CLIENT_MESSAGE_SWITCHES).withMessage("off can only hold the messages a client is sent"),
 ];
 
 // Shared by create (required) and update (optional).

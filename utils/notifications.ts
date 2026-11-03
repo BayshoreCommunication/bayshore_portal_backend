@@ -5,7 +5,7 @@ import {
   NOTIFICATION_TITLE_MAX_LENGTH,
   type NotificationType,
 } from "../models/notification.model";
-import { Client } from "../models/client.model";
+import { Client, type ClientMessage } from "../models/client.model";
 import { User, type IUser } from "../models/user.model";
 import type { IContent } from "../models/content.model";
 import type { IReport } from "../models/report.model";
@@ -13,6 +13,7 @@ import type { IProject } from "../models/project.model";
 import { emitToUsers } from "../realtime/messagesRealtime";
 import { env } from "../config/env";
 import { activityEmail, emailReady, sendEmail, type EmailTone } from "./email";
+import { clientAllows } from "./clientMessages";
 
 // Telling the other side that something happened on a piece of content. Called by the
 // content controller after the change itself is saved.
@@ -122,7 +123,12 @@ const deliver = async (
   if (!recipients.length) return;
   const title = clip(notification.title, NOTIFICATION_TITLE_MAX_LENGTH);
   const body = notification.body ? clip(notification.body, NOTIFICATION_BODY_MAX_LENGTH) : undefined;
-  await Notification.insertMany(
+  // To a client: only what the team hasn't switched off for them (bell and email apart).
+  const toClient = notification.email === "client";
+  const message = notification.type as ClientMessage;
+  const bell = !toClient || (await clientAllows(notification.content.client, message, "bell"));
+  const email = Boolean(notification.email) && (!toClient || (await clientAllows(notification.content.client, message, "email")));
+  if (bell) await Notification.insertMany(
     recipients.map((recipient) => ({
       recipient,
       type: notification.type,
@@ -136,7 +142,7 @@ const deliver = async (
       pieces: notification.pieces ?? 1,
     }))
   );
-  if (notification.email) await emailTo(recipients, { type: notification.type, title, body, content: notification.content, audience: notification.email });
+  if (email && notification.email) await emailTo(recipients, { type: notification.type, title, body, content: notification.content, audience: notification.email });
 };
 
 // Runs the work and swallows (logs) whatever goes wrong.
@@ -276,6 +282,7 @@ const notifyClientLogins = async (
   actor: IUser,
   { type, title, body, link }: { type: NotificationType; title: string; body?: string; link: string }
 ) => {
+  if (!(await clientAllows(clientId, type as ClientMessage, "bell"))) return;
   const recipients = (await clientLoginsOf(clientId)).filter((id) => String(id) !== String(actor._id));
   if (!recipients.length) return;
   await Notification.insertMany(
@@ -321,7 +328,7 @@ const approvedTitle = (items: number) => (items === 1 ? "An item on your onboard
 
 // The team approved items on the client's onboarding form. Their bell updates at once.
 export const notifyOnboardingApproved = quietly(async (clientId: Id, actor: IUser, items: number) => {
-  if (items < 1) return;
+  if (items < 1 || !(await clientAllows(clientId, "onboarding_approved", "bell"))) return;
   const recipients = (await clientLoginsOf(clientId)).filter((id) => String(id) !== String(actor._id));
   if (!recipients.length) return;
   const since = new Date(Date.now() - APPROVED_TOGETHER_MS);
@@ -362,6 +369,7 @@ const listOf = (names: string[]) => (names.length <= 2 ? names.join(" and ") : `
 export const notifyServicesUpdated = quietly(async (clientId: Id, actor: IUser, changes: ServiceChanges) => {
   const { added, done, changed, removed, declined = [] } = changes;
   if (!added.length && !done.length && !changed.length && !removed.length && !declined.length) return;
+  if (!(await clientAllows(clientId, "services_updated", "bell"))) return;
   const recipients = (await clientLoginsOf(clientId)).filter((id) => String(id) !== String(actor._id));
   if (!recipients.length) return;
 
@@ -489,12 +497,15 @@ export const notifyOnboardingComment = quietly(
       recipients = (await clientLoginsOf(clientId)).filter((id) => String(id) !== String(actor._id));
     }
     if (!recipients.length) return;
+    // To the client: only what the team hasn't switched off for them.
+    const bell = input.side === "client" || (await clientAllows(clientId, "onboarding_comment", "bell"));
+    const email = input.side === "client" || (await clientAllows(clientId, "onboarding_comment", "email"));
 
     const title =
       input.side === "client"
         ? `${company} ${input.reply ? "replied" : "commented"} on their onboarding`
         : `${actor.fullName} ${input.reply ? "replied to your comment" : "commented"} on your onboarding`;
-    await Notification.insertMany(
+    if (bell) await Notification.insertMany(
       recipients.map((recipient) => ({
         recipient,
         type: "onboarding_comment" as const,
@@ -507,11 +518,11 @@ export const notifyOnboardingComment = quietly(
         pieces: 1,
       }))
     );
-    emitToUsers(recipients.map(String), "notifications:new", { type: "onboarding_comment", client: String(clientId) });
+    if (bell) emitToUsers(recipients.map(String), "notifications:new", { type: "onboarding_comment", client: String(clientId) });
 
     // And by email, every time: the client with a button into their onboarding, the team into
     // the client's onboarding page.
-    if (!emailReady) return;
+    if (!emailReady || !email) return;
     const audience = input.side === "client" ? "team" : "client";
     const look = EMAIL_LOOK.onboarding_comment;
     const url = audience === "client" ? `${env.clientPortalUrl}/sign-in?callbackUrl=${encodeURIComponent(onForm)}` : `${env.companyPortalUrl}/clients/${clientId}/onboarding`;

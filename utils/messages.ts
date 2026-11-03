@@ -6,6 +6,7 @@ import { Notification, NOTIFICATION_BODY_MAX_LENGTH, NOTIFICATION_TITLE_MAX_LENG
 import { User, type IUser } from "../models/user.model";
 import { emitNewMessage, emitToUsers } from "../realtime/messagesRealtime";
 import { emailNewMessage } from "./activityEmails";
+import { isOff } from "./clientMessages";
 
 // Putting a message into a client's conversation: saving it, sending it live to whoever has
 // the conversation open, and telling the other side through their notifications.
@@ -21,16 +22,17 @@ export const sideOf = (user: Pick<IUser, "role">): MessageSide => (user.role ===
 
 // The other side of a client's conversation: its logins when the team writes, the staff on
 // it — account manager, team, whoever added it — when the client does. Never the writer.
+// `bell` and `email`: whether it may go each way — to a client, as the team switched it for them.
 const otherSideOf = async (clientId: Id, side: MessageSide, except: Id) => {
-  const client = await Client.findById(clientId).select("companyName accountManager team createdBy").lean();
+  const client = await Client.findById(clientId).select("companyName accountManager team createdBy messagesOff").lean();
   const company = client?.companyName ?? "A client";
   if (side === "team") {
     const recipients: Id[] = await User.find({ role: "client", client: clientId, status: "active", _id: { $ne: except } }).distinct("_id");
-    return { recipients, company };
+    return { recipients, company, bell: !isOff(client, "message", "bell"), email: !isOff(client, "message", "email") };
   }
   const ids = [client?.accountManager, ...(client?.team ?? []), client?.createdBy].filter((id): id is Id => Boolean(id));
   const recipients: Id[] = await User.find({ _id: { $in: ids, $ne: except }, status: "active", role: { $ne: "client" } }).distinct("_id");
-  return { recipients, company };
+  return { recipients, company, bell: true, email: true };
 };
 
 const whenOf = (meeting: IMessageMeeting) =>
@@ -41,8 +43,8 @@ const whenOf = (meeting: IMessageMeeting) =>
 // the pile. A notification is a courtesy — it never fails the message it reports.
 const notifyOtherSide = async (message: IMessage, actor: IUser) => {
   try {
-    const { recipients, company } = await otherSideOf(message.client, message.side, actor._id);
-    if (recipients.length === 0) return;
+    const { recipients, company, bell, email } = await otherSideOf(message.client, message.side, actor._id);
+    if (recipients.length === 0 || (!bell && !email)) return;
 
     const from = message.side === "team" ? "BayShore" : company;
     const body =
@@ -78,7 +80,11 @@ const notifyOtherSide = async (message: IMessage, actor: IUser) => {
           content: message.content,
           pieces: count,
         };
-        if (unread) await Notification.updateOne({ _id: unread._id }, { $set: fields });
+        // The bell switched off: no notification — and so each message is new, for the email.
+        if (!bell) {
+          fresh.push(recipient);
+          firstTitle = fields.title;
+        } else if (unread) await Notification.updateOne({ _id: unread._id }, { $set: fields });
         else {
           await Notification.create({ recipient, type: "message", client: message.client, ...fields });
           fresh.push(recipient);
@@ -86,9 +92,9 @@ const notifyOtherSide = async (message: IMessage, actor: IUser) => {
         }
       })
     );
-    if (fresh.length) await emailNewMessage(fresh, { side: message.side, from: message.side === "team" ? actor.fullName : company, title: firstTitle, body: clip(body, 280), link });
+    if (fresh.length && email) await emailNewMessage(fresh, { side: message.side, from: message.side === "team" ? actor.fullName : company, title: firstTitle, body: clip(body, 280), link });
     // Their bell can update at once instead of at its next poll.
-    emitToUsers(recipients.map(String), "notifications:new", { type: "message", client: String(message.client) });
+    if (bell) emitToUsers(recipients.map(String), "notifications:new", { type: "message", client: String(message.client) });
   } catch (error) {
     console.error("Message notification failed:", error);
   }

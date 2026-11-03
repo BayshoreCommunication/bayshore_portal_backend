@@ -455,3 +455,12 @@ export const deleteClient = asyncHandler(async (req: Request, res: Response) => 
 
   return ApiResponse(res, 200, "Client deleted successfully");
 });
+
+// PATCH /clients/:id/messages — the system messages this client isn't sent (company portal:
+// Notifications → Client messages). The whole list each time.
+export const updateClientMessages = asyncHandler(async (req: Request, res: Response) => {
+  const client = await findVisibleClient(req.user!, req.params.id);
+  client.messagesOff = Array.from(new Set((req.body.off as string[]).map(String)));
+  await client.save();
+  return ApiResponse(res, 200, "Messages updated", { messagesOff: client.messagesOff });
+});

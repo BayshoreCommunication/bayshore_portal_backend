@@ -1,6 +1,7 @@
 import { env } from "../config/env";
 import { Client, type IClient } from "../models/client.model";
 import { activityEmail, emailReady, sendEmail, type ActivityEmail } from "./email";
+import { isOff } from "./clientMessages";
 
 // The emails that walk a new client through onboarding:
 //   1. Welcome — when their portal account is made: how to sign in, and the two things to do
@@ -82,7 +83,7 @@ export const emailOnboardingWelcome = async (client: IClient): Promise<void> => 
 // The client says they've booked their onboarding call. Sent once, however often it is said: the
 // send is claimed on the record first, and given back if it can't go out, so a later save tries again.
 export const emailCallBooked = async (client: IClient): Promise<void> => {
-  if (!emailReady) return;
+  if (!emailReady || isOff(client, "onboarding_call_booked", "email")) return;
   try {
     const claimed = await Client.updateOne(
       { _id: client._id, "onboardingEmails.callBookedSentAt": { $exists: false } },
@@ -151,6 +152,8 @@ export const sendDueReminders = async () => {
       status: "onboarding",
       user: { $exists: true },
       "onboarding.kickoffCall.booked": { $ne: true },
+      // Not one the team switched the reminder off for.
+      messagesOff: { $ne: "onboarding_reminder.email" },
       createdAt: { $lte: new Date(now - hours * HOUR), $gte: new Date(now - REMIND_WITHIN) },
       "onboardingEmails.reminders": index === 0 ? { $in: [null, 0] } : index,
       ...(index > 0 ? { "onboardingEmails.lastReminderAt": { $lte: new Date(now - MIN_GAP) } } : {}),

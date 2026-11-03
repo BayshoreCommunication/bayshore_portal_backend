@@ -16,6 +16,27 @@ export const CLIENT_NOTES_MAX_LENGTH = 500;
 export const CLIENT_PORTAL_MENUS = ["dashboard", "onboarding", "reports", "content", "leads", "projects", "services", "calendar", "messages", "payments", "notifications"] as const;
 export type ClientPortalMenu = (typeof CLIENT_PORTAL_MENUS)[number];
 
+// The system messages a client can be sent, and how each reaches them: by email, in the portal's
+// bell, or both. The team turns any of them off for one client (`messagesOff`, as "message.email").
+// The welcome isn't here: it goes the moment the client is made, before anything can be set.
+export const CLIENT_MESSAGES = {
+  portal_login: ["email"],
+  onboarding_reminder: ["email"],
+  onboarding_call_booked: ["email"],
+  content_sent: ["email", "bell"],
+  content_resubmitted: ["email", "bell"],
+  content_comment: ["email", "bell"],
+  onboarding_comment: ["email", "bell"],
+  message: ["email", "bell"],
+  report_published: ["email", "bell"],
+  project_created: ["email", "bell"],
+  onboarding_approved: ["bell"],
+  services_updated: ["bell"],
+} as const;
+export type ClientMessage = keyof typeof CLIENT_MESSAGES;
+export type ClientMessageChannel = "email" | "bell";
+export const CLIENT_MESSAGE_SWITCHES: string[] = Object.entries(CLIENT_MESSAGES).flatMap(([message, channels]) => channels.map((channel) => `${message}.${channel}`));
+
 // What a client who made their own account is shown at first: the onboarding form and the
 // services — and Settings, which is always there. The rest is turned on by the team, on the
 // client's edit form, once they have taken the client on.
@@ -483,6 +504,9 @@ export interface IClient extends Document {
   // client the team added (every one from before this could be chosen), and only the first
   // pages (CLIENT_FIRST_PORTAL_MENUS) for one who signed up themselves — see `portalMenusOf`.
   portalMenus?: ClientPortalMenu[];
+  // The system messages this client isn't sent ("message.email", "services_updated.bell" —
+  // CLIENT_MESSAGE_SWITCHES). Missing or empty: every one is sent.
+  messagesOff?: string[];
   // When they agreed to the Terms and Privacy Policy, making their own account. Missing for a
   // client the team added.
   termsAcceptedAt?: Date;
@@ -1085,6 +1109,7 @@ const clientSchema = new Schema<IClient>(
     details: { type: clientDetailsSchema },
     // No default: an absent list is not an empty one (see IClient).
     portalMenus: { type: [{ type: String, enum: CLIENT_PORTAL_MENUS }], default: undefined },
+    messagesOff: { type: [{ type: String, enum: CLIENT_MESSAGE_SWITCHES }], default: undefined },
     termsAcceptedAt: { type: Date },
     // Not set until the client starts the onboarding form.
     onboarding: { type: onboardingSchema },

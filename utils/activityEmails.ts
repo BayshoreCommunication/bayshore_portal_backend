@@ -7,6 +7,7 @@ import { env } from "../config/env";
 import { activityEmail, emailReady, sendEmail, type ActivityEmail } from "./email";
 import { REPORT_REVIEW_ROLES } from "./reportAccess";
 import { onboardingDue, onboardingSteps } from "./onboardingEmails";
+import { isOff } from "./clientMessages";
 
 // Emails for what happens outside a piece of content (whose own are in utils/notifications.ts):
 // a client added, a report handed in or published, a project started. The client hears what the
@@ -113,6 +114,7 @@ export const emailClientAdded = quietly(async (client: IClient, actor: IUser, pa
 // The team gave an existing client a portal login, or set a new password for theirs: the
 // client gets the email to sign in with and the password.
 export const emailPortalLogin = quietly(async (client: IClient, password: string, created: boolean) => {
+  if (isOff(client, "portal_login", "email")) return;
   // A first login for a client with onboarding still to do: ask for it, as the welcome does.
   const onboarding = created && onboardingDue(client);
   await sendEmail({
@@ -143,7 +145,7 @@ export const emailPortalLogin = quietly(async (client: IClient, password: string
 // A report moved on: handed in for review (the reviewers on the client hear), or published (the
 // client hears it's ready to read).
 export const emailReportStatus = quietly(async (report: IReport, actor: IUser) => {
-  const client = await Client.findById(report.client).select("companyName accountManager team createdBy").lean();
+  const client = await Client.findById(report.client).select("companyName accountManager team createdBy messagesOff").lean();
   if (!client) return;
   const period = [day(report.periodStart), day(report.periodEnd)].filter(Boolean).join(" – ");
 
@@ -167,7 +169,7 @@ export const emailReportStatus = quietly(async (report: IReport, actor: IUser) =
     });
   }
 
-  if (report.status === "published") {
+  if (report.status === "published" && !isOff(client, "report_published", "email")) {
     await emailEach(await clientLoginsOf(report.client), {
       eyebrow: "New report",
       tone: "success",
@@ -187,7 +189,7 @@ export const emailReportStatus = quietly(async (report: IReport, actor: IUser) =
 // A project was started: by the team (the client hears), or asked for by the client (the staff
 // on it hear).
 export const emailProjectCreated = quietly(async (project: IProject, actor: IUser) => {
-  const client = await Client.findById(project.client).select("companyName accountManager team createdBy").lean();
+  const client = await Client.findById(project.client).select("companyName accountManager team createdBy messagesOff").lean();
   if (!client) return;
 
   if (project.requestedBy === "client") {
@@ -206,6 +208,7 @@ export const emailProjectCreated = quietly(async (project: IProject, actor: IUse
     return;
   }
 
+  if (isOff(client, "project_created", "email")) return;
   await emailEach(await clientLoginsOf(project.client, actor._id), {
     eyebrow: "New project",
     tone: "action",
