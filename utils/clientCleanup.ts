@@ -11,6 +11,7 @@ import { Project } from "../models/project.model";
 import { RefreshToken } from "../models/refreshToken.model";
 import { Report } from "../models/report.model";
 import { User } from "../models/user.model";
+import { emitToUsers } from "../realtime/messagesRealtime";
 import { deleteFromSpaces } from "./uploadToSpaces";
 
 // Everything kept for a client, removed with it: its logins, content, onboarding comments,
@@ -40,17 +41,23 @@ export const removeClientData = async (clientIds: Id[]) => {
   const filter = { client: { $in: clientIds } };
   const files = new Set<string>();
 
-  const users = await User.find(filter).select("_id avatar").lean();
+  const clients = await Client.find({ _id: { $in: clientIds } }).lean();
+  for (const client of clients) filesIn(client, files);
+  // Their logins: those that name the client, and the one the client names — so no way in is left.
+  const loginIds = clients.flatMap((client) => (client.user ? [client.user] : []));
+  const users = await User.find({ $or: [filter, { _id: { $in: loginIds }, role: "client" }] }).select("_id avatar").lean();
+  const userIds = users.map((user) => user._id);
   for (const user of users) filesIn(user.avatar, files);
-  for (const client of await Client.find({ _id: { $in: clientIds } }).lean()) filesIn(client, files);
   for (const model of OWNED) {
     for (const doc of await (model as mongoose.Model<unknown>).find(filter).lean()) filesIn(doc, files);
   }
 
   await Promise.all(OWNED.map((model) => (model as mongoose.Model<unknown>).deleteMany(filter)));
-  await RefreshToken.deleteMany({ user: { $in: users.map((user) => user._id) } });
-  await User.deleteMany(filter);
+  await RefreshToken.deleteMany({ user: { $in: userIds } });
+  await User.deleteMany({ _id: { $in: userIds } });
   await Client.deleteMany({ _id: { $in: clientIds } });
+  // Anyone still signed in to the client portal is signed out there now.
+  emitToUsers(userIds.map(String), "account:removed", {});
 
   // Best effort — an unreachable file store shouldn't fail the delete.
   await Promise.allSettled([...files].map((url) => deleteFromSpaces(url)));

@@ -32,6 +32,7 @@ import { notifyCallBooked } from "../utils/notifications";
 import { answersOfItems, askedItemsOf } from "../utils/onboardingUpdates";
 import { canAccessClient } from "../utils/clientAccess";
 import { emitToClient } from "../realtime/messagesRealtime";
+import { removeClientData } from "../utils/clientCleanup";
 
 // Onboarding, for someone who has no account yet. Nobody is signed in here, so these routes
 // are open — and what keeps one visitor's answers from another is a key:
@@ -304,10 +305,11 @@ export const updateOnboarding = asyncHandler(async (req: Request, res: Response)
   return ApiResponse(res, 200, req.body.submit === true ? "Onboarding submitted" : "Onboarding saved", viewOf(client));
 });
 
-// DELETE /onboarding/:id — withdraw it. The pending record it made goes with it.
+// DELETE /onboarding/:id — withdraw it. The pending record it made goes with it, and everything
+// kept for it.
 export const deleteOnboarding = asyncHandler(async (req: Request, res: Response) => {
   const client = await findOwn(req);
-  await client.deleteOne();
+  await removeClientData([client._id]);
   return ApiResponse(res, 200, "Onboarding deleted successfully");
 });
 
