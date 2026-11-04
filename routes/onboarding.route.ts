@@ -17,10 +17,11 @@ import {
   updateOnboarding,
   uploadMyOnboardingMedia,
 } from "../controllers/onboarding.controller";
+import { bookMyCall, getMyBooking } from "../controllers/booking.controller";
+import { body } from "express-validator";
 import { addMyOnboardingComment, addOnboardingComment, listMyOnboardingComments, listOnboardingComments, replyToOnboardingComment } from "../controllers/onboardingComment.controller";
 import { commentUpload, onboardingMediaUpload } from "../middleware/upload";
 import { protect, authorize } from "../middleware/auth";
-import { requireServicesUnlocked as unlocked } from "../utils/serviceLock";
 import { validate } from "../middleware/validate";
 import { USER_ROLES, type UserRole } from "../models/user.model";
 import {
@@ -312,6 +313,47 @@ router.delete("/me/media/:kind", protect, authorize("client"), onboardingMediaKi
  *       422:
  *         description: No step, no text and no file, or a file of the wrong type or size
  */
+/**
+ * @swagger
+ * /onboarding/me/booking:
+ *   get:
+ *     summary: Free times for the signed-in client's onboarding call
+ *     description: >
+ *       From the booking calendar the team chose on the company portal's Calendar page.
+ *       `available` is false when there is none — book on the Google booking page then.
+ *       `booked` is the call already booked, if any.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: "{ available, booked, duration, host, slots: ISO times }"
+ *   post:
+ *     summary: Book (or move) the signed-in client's onboarding call
+ *     description: Adds it to the booking calendar with a Google Meet link; Google emails the client the invitation.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [start]
+ *             properties:
+ *               start:
+ *                 type: string
+ *                 format: date-time
+ *                 description: One of the free times
+ *     responses:
+ *       200:
+ *         description: "{ callAt, meetLink }"
+ *       409:
+ *         description: That time is no longer free, or online booking isn't open
+ */
+router.get("/me/booking", protect, authorize("client"), getMyBooking);
+router.post("/me/booking", protect, authorize("client"), [body("start").isISO8601().withMessage("Pick a time")], validate, bookMyCall);
 router.get("/me/comments", protect, authorize("client"), listMyOnboardingComments);
 router.post("/me/comments", protect, authorize("client"), commentUpload, addOnboardingCommentRules, validate, addMyOnboardingComment);
 
@@ -404,7 +446,7 @@ router.delete("/clients/:clientId/custom-accounts/:key", protect, authorize(...C
  * /onboarding/clients/{clientId}/password:
  *   get:
  *     summary: Staff (managers) — read one password a client shared on their onboarding form
- *     description: "`login` is where it is kept: domain, hosting, cms, or an account such as google.ads or social.instagram. Opened only on request, with the security code's pass (X-Services-Unlock header — see POST /services/unlock); the client's record never carries it readable."
+ *     description: "`login` is where it is kept: domain, hosting, cms, or an account such as google.ads or social.instagram. Opened only on request; the client's record never carries it readable."
  *     tags: [Onboarding]
  *     security:
  *       - bearerAuth: []
@@ -459,7 +501,7 @@ router.delete(
   removeClientOnboardingMedia
 );
 
-router.get("/clients/:clientId/password", protect, authorize(...CAN_MANAGE), unlocked, onboardingCommentsClientRule, validate, revealClientOnboardingPassword);
+router.get("/clients/:clientId/password", protect, authorize(...CAN_MANAGE), onboardingCommentsClientRule, validate, revealClientOnboardingPassword);
 
 router.get("/clients/:clientId/comments", protect, authorize(...STAFF_ROLES), onboardingCommentsClientRule, validate, listOnboardingComments);
 router.post(

@@ -13,7 +13,8 @@
     "seed:superadmin": "ts-node scripts/seedSuperAdmin.ts",
     "seed:service": "ts-node scripts/seedService.ts",
     "migrate:users": "ts-node scripts/migrateUsers.ts",
-    "email:test": "ts-node scripts/sendTestEmail.ts"
+    "email:test": "ts-node scripts/sendTestEmail.ts",
+    "migrate:projects": "ts-node scripts/moveProjectsToServices.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",

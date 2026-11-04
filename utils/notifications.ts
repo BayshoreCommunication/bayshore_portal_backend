@@ -9,7 +9,8 @@ import { Client, type ClientMessage } from "../models/client.model";
 import { User, type IUser } from "../models/user.model";
 import type { IContent } from "../models/content.model";
 import type { IReport } from "../models/report.model";
-import type { IProject } from "../models/project.model";
+// A project as these messages need it: a client's custom service (controllers/project.controller.ts).
+type ProjectNews = { _id?: unknown; client: mongoose.Types.ObjectId; name: string; description?: string; requestedBy: "client" | "team" };
 import { emitToUsers } from "../realtime/messagesRealtime";
 import { env } from "../config/env";
 import { activityEmail, emailReady, sendEmail, type EmailTone } from "./email";
@@ -71,6 +72,8 @@ const EMAIL_LOOK: Record<NotificationType, { eyebrow: string; tone: EmailTone; b
   onboarding_call_booked: { eyebrow: "Call booked", tone: "success", button: "Open the onboarding" },
   onboarding_approved: { eyebrow: "Approved", tone: "success", button: "Open your onboarding" },
   services_updated: { eyebrow: "Your services", tone: "info", button: "See your services" },
+  login_changed: { eyebrow: "Your sign-in", tone: "alert", button: "Open your portal" },
+  onboarding_reminder: { eyebrow: "Onboarding", tone: "action", button: "Book your call" },
   service_requested: { eyebrow: "Service request", tone: "action", button: "Open the client" },
 };
 
@@ -157,6 +160,63 @@ const quietly =
   };
 
 // ── To the client ────────────────────────────────────────────────────────────
+
+// A message to the client's logins by email, as it reads in their bell: for the messages that
+// have no email of their own. The caller checks the client's switch for it.
+const emailClientLogins = async (recipients: Id[], { type, title, body, link }: { type: NotificationType; title: string; body?: string; link: string }) => {
+  if (!emailReady || !recipients.length) return;
+  const people = await User.find({ _id: { $in: recipients }, email: { $nin: [null, ""] } }).select("fullName email").lean();
+  const look = EMAIL_LOOK[type];
+  await Promise.all(
+    people.map((person) =>
+      sendEmail({
+        to: person.email as string,
+        ...activityEmail({ name: person.fullName, title, body, eyebrow: look.eyebrow, tone: look.tone, button: { label: look.button, url: `${env.clientPortalUrl}${link}` }, audience: "client" }),
+      })
+    )
+  );
+};
+
+// A message only for the client's bell — its email goes on its own (onboardingEmails.ts) — when
+// the team left the bell on for them.
+const bellToClient = async (clientId: Id, message: ClientMessage, notification: { type: NotificationType; title: string; body?: string; link: string }) => {
+  if (!(await clientAllows(clientId, message, "bell"))) return;
+  const recipients = await clientLoginsOf(clientId);
+  if (!recipients.length) return;
+  await Notification.insertMany(
+    recipients.map((recipient) => ({
+      recipient,
+      type: notification.type,
+      title: clip(notification.title, NOTIFICATION_TITLE_MAX_LENGTH),
+      body: notification.body ? clip(notification.body, NOTIFICATION_BODY_MAX_LENGTH) : undefined,
+      link: notification.link,
+      client: clientId,
+    }))
+  );
+  emitToUsers(recipients.map(String), "notifications:new", { type: notification.type, client: String(clientId) });
+};
+
+// The onboarding call isn't booked an hour after signing up (onboardingEmails.ts: the reminder).
+export const notifyOnboardingReminder = quietly(async (clientId: Id) =>
+  bellToClient(clientId, "onboarding_reminder", {
+    type: "onboarding_reminder",
+    title: "Book your onboarding call",
+    body: "Pick a time for a short call. A marketing specialist will go through everything with you and fill in what's missing.",
+    link: "/onboarding?book=1",
+  })
+);
+
+// The client's onboarding call is booked: in their bell too, as well as the email.
+export const notifyClientCallBooked = quietly(async (clientId: Id, callAt?: Date | null) =>
+  bellToClient(clientId, "onboarding_call_booked", {
+    type: "onboarding_call_booked",
+    title: "Your onboarding call is booked",
+    body: callAt
+      ? `See you on ${callAt.toLocaleString("en-US", { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })} (Eastern). The invite is in your inbox.`
+      : "The invite is in your inbox. We look forward to talking with you.",
+    link: "/onboarding",
+  })
+);
 
 const sentTitle = (pieces: number) =>
   pieces === 1 ? "New content is ready for your approval" : `${pieces} new pieces are ready for your approval`;
@@ -312,7 +372,7 @@ export const notifyReportPublished = quietly(async (report: IReport, actor: IUse
 });
 
 // The team started a project for the client. (One the client asked for themselves, they know about.)
-export const notifyProjectCreated = quietly(async (project: IProject, actor: IUser) => {
+export const notifyProjectCreated = quietly(async (project: ProjectNews, actor: IUser) => {
   if (project.requestedBy === "client") return;
   await notifyClientLogins(project.client, actor, {
     type: "project_created",
@@ -328,9 +388,13 @@ const approvedTitle = (items: number) => (items === 1 ? "An item on your onboard
 
 // The team approved items on the client's onboarding form. Their bell updates at once.
 export const notifyOnboardingApproved = quietly(async (clientId: Id, actor: IUser, items: number) => {
-  if (items < 1 || !(await clientAllows(clientId, "onboarding_approved", "bell"))) return;
+  if (items < 1) return;
   const recipients = (await clientLoginsOf(clientId)).filter((id) => String(id) !== String(actor._id));
   if (!recipients.length) return;
+  if (await clientAllows(clientId, "onboarding_approved", "email")) {
+    await emailClientLogins(recipients, { type: "onboarding_approved", title: approvedTitle(items), body: `${actor.fullName} checked and approved your answers.`, link: "/onboarding" });
+  }
+  if (!(await clientAllows(clientId, "onboarding_approved", "bell"))) return;
   const since = new Date(Date.now() - APPROVED_TOGETHER_MS);
   for (const recipient of recipients) {
     const open = await Notification.findOne({ recipient, type: "onboarding_approved", client: clientId, readAt: null, createdAt: { $gte: since } });
@@ -369,9 +433,10 @@ const listOf = (names: string[]) => (names.length <= 2 ? names.join(" and ") : `
 export const notifyServicesUpdated = quietly(async (clientId: Id, actor: IUser, changes: ServiceChanges) => {
   const { added, done, changed, removed, declined = [] } = changes;
   if (!added.length && !done.length && !changed.length && !removed.length && !declined.length) return;
-  if (!(await clientAllows(clientId, "services_updated", "bell"))) return;
   const recipients = (await clientLoginsOf(clientId)).filter((id) => String(id) !== String(actor._id));
   if (!recipients.length) return;
+  const [bell, email] = await Promise.all([clientAllows(clientId, "services_updated", "bell"), clientAllows(clientId, "services_updated", "email")]);
+  if (!bell && !email) return;
 
   const title = added.length
     ? `New service added: ${listOf(added)}`
@@ -392,6 +457,8 @@ export const notifyServicesUpdated = quietly(async (clientId: Id, actor: IUser, 
     .filter(Boolean)
     .join(" ");
 
+  if (email) await emailClientLogins(recipients, { type: "services_updated", title, body, link: "/services" });
+  if (!bell) return;
   await Notification.insertMany(
     recipients.map((recipient) => ({
       recipient,
@@ -405,6 +472,38 @@ export const notifyServicesUpdated = quietly(async (clientId: Id, actor: IUser, 
     }))
   );
   emitToUsers(recipients.map(String), "notifications:new", { type: "services_updated", client: String(clientId) });
+});
+
+// The team changed how the client signs in: their email, their password, or both. The bell
+// says what changed; the new password itself only goes by email, never into a notification.
+export const notifyLoginChanged = quietly(async (clientId: Id, actor: IUser, changed: { email?: string; password?: boolean }) => {
+  if (!changed.email && !changed.password) return;
+  if (!(await clientAllows(clientId, "portal_login", "bell"))) return;
+  const recipients = (await clientLoginsOf(clientId)).filter((id) => String(id) !== String(actor._id));
+  if (!recipients.length) return;
+
+  const title = changed.email && changed.password ? "Your sign-in email and password were changed" : changed.email ? "Your sign-in email was changed" : "Your password was changed";
+  const body = [
+    changed.email ? `You now sign in with ${changed.email}.` : "",
+    changed.password ? "We emailed you the new password." : "",
+    "If you didn't ask for this, contact your account manager.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  await Notification.insertMany(
+    recipients.map((recipient) => ({
+      recipient,
+      type: "login_changed",
+      title: clip(title, NOTIFICATION_TITLE_MAX_LENGTH),
+      body: clip(body, NOTIFICATION_BODY_MAX_LENGTH),
+      link: "/settings",
+      actor: actor._id,
+      actorName: actor.fullName,
+      client: clientId,
+    }))
+  );
+  emitToUsers(recipients.map(String), "notifications:new", { type: "login_changed", client: String(clientId) });
 });
 
 // ── Clearing up ──────────────────────────────────────────────────────────────

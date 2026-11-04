@@ -5,7 +5,6 @@ import { Lead } from "../models/lead.model";
 import { ServiceOrder } from "../models/serviceOrder.model";
 import { Report } from "../models/report.model";
 import { Content } from "../models/content.model";
-import { Project } from "../models/project.model";
 import { Message } from "../models/message.model";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
@@ -140,16 +139,25 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
 
   // Work waiting on the team: reports handed in for review, content the client sent back,
   // and projects nobody has started — newest first, mixed together.
-  const [reports, contents, projects, reportCount, contentCount, projectCount, meetings, meetingCount] = await Promise.all([
+  const [reports, contents, newProjects, reportCount, contentCount, meetings, meetingCount] = await Promise.all([
     Report.find(and({ status: "submitted" })).sort({ updatedAt: -1 }).limit(LIST_LIMIT).select("title periodType periodStart client updatedAt").populate("client", "companyName").lean(),
     Content.find(and({ status: "revision_requested" })).sort({ updatedAt: -1 }).limit(LIST_LIMIT).select("title type client updatedAt").populate("client", "companyName").lean(),
-    Project.find(and({ status: "new" })).sort({ createdAt: -1 }).limit(LIST_LIMIT).select("name client createdAt").populate("client", "companyName").lean(),
+    // Projects are the clients' custom services (controllers/project.controller.ts): those not started.
+    Client.aggregate<{ companyName: string; plan: { name: string; project?: unknown; addedAt?: Date } }>([
+      { $match: { $and: [clientScope, { "details.services.custom": true }] } },
+      { $unwind: "$details.services" },
+      { $match: { "details.services.custom": true, "details.services.status": { $ne: "done" }, "details.services.stage": { $in: [null, "new"] } } },
+      { $sort: { "details.services.addedAt": -1 } },
+      { $project: { companyName: 1, plan: "$details.services" } },
+    ]),
     Report.countDocuments(and({ status: "submitted" })),
     Content.countDocuments(and({ status: "revision_requested" })),
-    Project.countDocuments(and({ status: "new" })),
     Message.find(and({ kind: "meeting", "meeting.startsAt": { $gte: now } })).sort({ "meeting.startsAt": 1 }).limit(MEETING_LIMIT).select("meeting client").populate("client", "companyName").lean(),
     Message.countDocuments(and({ kind: "meeting", "meeting.startsAt": { $gte: now } })),
   ]);
+
+  const projects = newProjects.slice(0, LIST_LIMIT);
+  const projectCount = newProjects.length;
 
   const companyOf = (client: unknown) => (client && typeof client === "object" && "companyName" in client ? String(client.companyName) : "");
 
@@ -172,11 +180,11 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
     })),
     ...projects.map((project) => ({
       kind: "project" as const,
-      id: String(project._id),
-      title: project.name,
-      client: companyOf(project.client),
+      id: String(project.plan.project ?? ""),
+      title: project.plan.name,
+      client: project.companyName,
       status: "request" as const,
-      at: project.createdAt,
+      at: project.plan.addedAt ?? now,
     })),
   ]
     .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())

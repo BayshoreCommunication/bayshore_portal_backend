@@ -2,13 +2,15 @@ import { env } from "../config/env";
 import { Client, type IClient } from "../models/client.model";
 import { activityEmail, emailReady, sendEmail, type ActivityEmail } from "./email";
 import { isOff } from "./clientMessages";
+import { notifyOnboardingReminder } from "./notifications";
 
 // The emails that walk a new client through onboarding:
 //   1. Welcome — when their portal account is made: how to sign in, and the two things to do
 //      first: fill in the onboarding form and book the onboarding call.
-//   2. Reminder — 3 hours after the welcome, if the call still isn't booked: the form can wait;
-//      book the call, and a marketing specialist fills it in with them on it (see startOnboardingReminders).
-//      Booking before then means no reminder: only clients not booked are looked for.
+//   2. Reminder — 1 hour after the welcome, if the call still isn't booked: the form can wait;
+//      book the call, and a marketing specialist fills it in with them on it (see startOnboardingChecks
+//      in bookingSync.ts). Booking before then means no reminder: only clients not booked are looked
+//      for — and a booking found on a connected Google Calendar counts, said or not.
 //   3. Call booked — the moment they say they've booked it ("I've booked my call"), at any point:
 //      what the call is for. Never waits for the reminder check.
 // Each goes once; what has gone out is kept on the client (client.onboardingEmails). Like every
@@ -115,10 +117,8 @@ export const emailCallBooked = async (client: IClient): Promise<void> => {
 // ── 2. Reminders ─────────────────────────────────────────────────────────────
 
 // When each reminder goes, in hours after the account was made (the welcome goes out then): one,
-// 3 hours later. After it, no more.
-export const REMINDER_HOURS = [3];
-// How often the reminders due are looked for — often, so a reminder goes close to 3 hours, not up to an hour late.
-const CHECK_EVERY = 5 * 60 * 1000;
+// an hour later. After it, no more.
+export const REMINDER_HOURS = [1];
 // A client made longer ago than this is never reminded — so the first run doesn't write to
 // everyone who signed up before these emails existed.
 const REMIND_WITHIN = (REMINDER_HOURS[REMINDER_HOURS.length - 1] + 48) * HOUR;
@@ -152,8 +152,8 @@ export const sendDueReminders = async () => {
       status: "onboarding",
       user: { $exists: true },
       "onboarding.kickoffCall.booked": { $ne: true },
-      // Not one the team switched the reminder off for.
-      messagesOff: { $ne: "onboarding_reminder.email" },
+      // Not one the team switched the reminder off for, by email and in the bell both.
+      messagesOff: { $not: { $all: ["onboarding_reminder.email", "onboarding_reminder.bell"] } },
       createdAt: { $lte: new Date(now - hours * HOUR), $gte: new Date(now - REMIND_WITHIN) },
       "onboardingEmails.reminders": index === 0 ? { $in: [null, 0] } : index,
       ...(index > 0 ? { "onboardingEmails.lastReminderAt": { $lte: new Date(now - MIN_GAP) } } : {}),
@@ -165,7 +165,10 @@ export const sendDueReminders = async () => {
         { $set: { "onboardingEmails.reminders": index + 1, "onboardingEmails.lastReminderAt": new Date() } }
       );
       if (!claimed.modifiedCount) continue;
-      const sent = await emailReminder(client);
+      // By email unless that is off (or email isn't set up), and in their bell unless that is.
+      const byEmail = emailReady && !isOff(client, "onboarding_reminder", "email");
+      const sent = byEmail ? await emailReminder(client) : true;
+      if (sent) void notifyOnboardingReminder(client._id);
       if (!sent) {
         await Client.updateOne(
           { _id: client._id },
@@ -174,16 +177,4 @@ export const sendDueReminders = async () => {
       }
     }
   }
-};
-
-// Looks for reminders due every 5 minutes, from a minute after the server starts. The server runs as
-// one process (ecosystem.config.js), so this runs once — and the claims above keep it safe if not.
-export const startOnboardingReminders = () => {
-  if (!emailReady) {
-    console.log("Onboarding reminders off: email isn't set up (RESEND_API_KEY, EMAIL_FROM).");
-    return;
-  }
-  const run = () => sendDueReminders().catch((error) => logFailure("reminders", error));
-  setTimeout(run, 60 * 1000).unref();
-  setInterval(run, CHECK_EVERY).unref();
 };

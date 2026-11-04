@@ -78,6 +78,14 @@ export const env = {
       })
       .filter(([who, code]) => who && code)
   ),
+  // Optional at boot: without them the API runs, and the Calendar page can't connect a Google
+  // account. Made in Google Cloud Console (APIs & Services → Credentials → OAuth client ID, a
+  // "Web application"), with the redirect URI below listed there exactly as it is here.
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID || "",
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+    redirectUri: process.env.GOOGLE_REDIRECT_URI || `${publicUrl}/api/v1/calendar/google/callback`,
+  },
   // Optional at boot: without them the API runs, and checkout answers 503.
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || "",

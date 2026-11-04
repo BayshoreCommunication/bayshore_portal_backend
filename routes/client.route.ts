@@ -19,7 +19,6 @@ import {
   updateClientRules,
   listClientsRules,
 } from "../validators/client.validator";
-import { requireServicesUnlocked as unlocked } from "../utils/serviceLock";
 
 const router = Router();
 
@@ -345,7 +344,7 @@ router.get("/:id", protect, authorize(...STAFF_ROLES), clientIdRule, validate, g
  * /clients/{id}/portal-password:
  *   get:
  *     summary: The client's portal password, readable
- *     description: Those who manage clients, with the security code's pass (X-Services-Unlock header — see POST /services/unlock). Without it, 423.
+ *     description: Those who manage clients.
  *     tags: [Clients]
  *     security:
  *       - bearerAuth: []
@@ -362,7 +361,7 @@ router.get("/:id", protect, authorize(...STAFF_ROLES), clientIdRule, validate, g
  *       423:
  *         description: The security code wasn't entered
  */
-router.get("/:id/portal-password", protect, authorize(...CAN_MANAGE), unlocked, clientIdRule, validate, getClientPortalPassword);
+router.get("/:id/portal-password", protect, authorize(...CAN_MANAGE), clientIdRule, validate, getClientPortalPassword);
 router.patch("/:id", protect, authorize(...CAN_MANAGE), clientIdRule, updateClientRules, validate, updateClient);
 
 /**

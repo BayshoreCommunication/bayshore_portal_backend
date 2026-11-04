@@ -7,9 +7,10 @@ import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
 import { clientScopeFor as scopeFor } from "../utils/clientAccess";
-import { emailClientAdded, emailPortalLogin } from "../utils/activityEmails";
-import { notifyOnboardingApproved, notifyServicesUpdated } from "../utils/notifications";
-import { plansOf, stampPlans } from "../utils/clientServicePlans";
+import { emailClientAdded, emailPortalLogin, emailSignInEmailChanged } from "../utils/activityEmails";
+import { notifyLoginChanged, notifyOnboardingApproved, notifyServicesUpdated } from "../utils/notifications";
+import { droppedFiles, plansOf, stampPlans } from "../utils/clientServicePlans";
+import { deleteFromSpaces } from "../utils/uploadToSpaces";
 import { stepOfItem } from "../utils/onboardingUpdates";
 import { unseal } from "../utils/secretBox";
 import { removeClientData } from "../utils/clientCleanup";
@@ -295,7 +296,7 @@ export const getClient = asyncHandler(async (req: Request, res: Response) => {
   if (!client) throw new ApiError(404, "Client not found");
 
   // Those who manage clients are told whether the portal password can be read back — the password
-  // itself only comes with the security code (getClientPortalPassword).
+  // itself comes on request (getClientPortalPassword).
   const hasPortalPassword = CAN_SEE_PASSWORD.includes(requester.role) ? Boolean(await portalPasswordOf(client)) : undefined;
 
   return ApiResponse(res, 200, "Client fetched successfully", { ...client.toJSON(), hasPortalPassword });
@@ -359,6 +360,8 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   }
   await assertStaff([accountManager, ...(team ?? [])]);
 
+  // The client hears when the way they sign in changes (below).
+  const emailChanged = email !== undefined && email !== client.email;
   if (contactName !== undefined) client.contactName = contactName;
   if (companyName !== undefined) client.companyName = companyName;
   if (email !== undefined) client.email = email;
@@ -427,10 +430,18 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   await client.save();
   await loginUser?.save();
 
+  // A custom service taken off is a project gone: its files go from storage too.
+  if (details !== undefined) await Promise.allSettled(droppedFiles(client, plansBefore).map((url) => deleteFromSpaces(url)));
+
   // A replaced password invalidates any sessions authenticated with the old one.
   if (password && loginUser) await RefreshToken.deleteMany({ user: loginUser._id });
-  // The client gets the way in: their sign-in email and the password just set.
+  // The client gets the way in: their sign-in email and the password just set — or, with only
+  // the email changed, that email. And their bell says so at once.
   if (password && loginUser) await emailPortalLogin(client, password, loginCreated);
+  else if (emailChanged && loginUser) await emailSignInEmailChanged(client);
+  if (loginUser && !loginCreated && (password || emailChanged)) {
+    await notifyLoginChanged(client._id, requester, { email: emailChanged ? client.email : undefined, password: Boolean(password) });
+  }
   // Items the team just approved on the client's onboarding: the client hears at once.
   if (newlyApproved) await notifyOnboardingApproved(client._id, requester, newlyApproved);
   // What the client's form asks (or what is approved on it) may have changed: it loads it again.

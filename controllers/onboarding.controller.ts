@@ -28,7 +28,7 @@ import { ONBOARDING_KEY_HEADER, ONBOARDING_SECTIONS } from "../validators/onboar
 import { seal, unseal } from "../utils/secretBox";
 import { deleteFromSpaces, uploadToSpaces } from "../utils/uploadToSpaces";
 import { callBookedOf, emailCallBooked } from "../utils/onboardingEmails";
-import { notifyCallBooked } from "../utils/notifications";
+import { notifyCallBooked, notifyClientCallBooked } from "../utils/notifications";
 import { answersOfItems, askedItemsOf } from "../utils/onboardingUpdates";
 import { canAccessClient } from "../utils/clientAccess";
 import { emitToClient } from "../realtime/messagesRealtime";
@@ -216,7 +216,12 @@ const applyAnswers = (client: IClient, body: Plain, byTeam = false) => {
             : // When the call was booked is the record's own (the client model's save hook): it is
               // kept while it stays booked, and nothing sent can set it.
               section === "kickoffCall" && isPlainObject(sent)
-              ? { booked: sent.booked, ...(sent.booked ? { bookedAt: client.onboarding?.kickoffCall?.bookedAt } : {}) }
+              ? // Saying "booked" keeps what is known of the call (its time, its event); taking it back clears it.
+                sent.booked
+                ? (({ bookedAt, callAt, eventId, calendar, meetLink }) => ({ booked: true, bookedAt, callAt, eventId, calendar, meetLink }))(
+                    client.onboarding?.kickoffCall ?? {}
+                  )
+                : { booked: sent.booked }
               : sent
     );
   }
@@ -381,6 +386,7 @@ export const updateMyOnboarding = asyncHandler(async (req: Request, res: Respons
   // The team hears of it in their bell at once.
   if (!wasBooked && callBookedOf(client)) {
     void emailCallBooked(client);
+    void notifyClientCallBooked(client._id, client.onboarding?.kickoffCall?.callAt);
     void notifyCallBooked(client._id, login);
   }
 

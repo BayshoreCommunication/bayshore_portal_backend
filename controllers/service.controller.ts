@@ -262,6 +262,14 @@ export const listMyServices = asyncHandler(async (req: Request, res: Response) =
   ]);
   // Running now: what is billed. Finished ones (marked done by the team) are their history.
   const all = client?.details?.services ?? [];
+  // A custom service is also the client's project: one never given its project id gets it now,
+  // so the Services page can link to it.
+  const ids: Record<string, mongoose.Types.ObjectId> = {};
+  all.forEach((plan, index) => {
+    if (plan.custom && !plan.project) ids[`details.services.${index}.project`] = plan.project = new mongoose.Types.ObjectId();
+  });
+  if (Object.keys(ids).length) await Client.updateOne({ _id: clientId }, { $set: ids });
+  const projectOf = (plan: (typeof all)[number]) => (plan.custom && plan.project ? String(plan.project) : undefined);
   const recorded = all.filter((plan) => plan.status !== "done");
   // A custom service is always paid once (one saved as monthly before counts as once too).
   const paidOnce = (plan: (typeof all)[number]) => Boolean(plan.custom);
@@ -294,6 +302,9 @@ export const listMyServices = asyncHandler(async (req: Request, res: Response) =
         detail: [plan.deadline ? `due ${dayOf(plan.deadline)}` : "", plan.duration ?? ""].filter(Boolean).join(" · ") || undefined,
         included: plan.included,
         addedAt: plan.addedAt,
+        // Its project, and how far the work on it has got.
+        project: projectOf(plan),
+        stage: plan.custom ? (plan.stage ?? "new") : undefined,
       })),
   ];
 
@@ -307,6 +318,7 @@ export const listMyServices = asyncHandler(async (req: Request, res: Response) =
       included: plan.included,
       addedAt: plan.addedAt,
       doneAt: plan.doneAt,
+      project: projectOf(plan),
     }))
     .sort((a, b) => (b.doneAt ? new Date(b.doneAt).getTime() : 0) - (a.doneAt ? new Date(a.doneAt).getTime() : 0));
 

@@ -1,6 +1,7 @@
 import type mongoose from "mongoose";
 import { Client, type IClient } from "../models/client.model";
-import type { IProject } from "../models/project.model";
+// A project as these messages need it: a client's custom service (controllers/project.controller.ts).
+type ProjectNews = { _id?: unknown; client: mongoose.Types.ObjectId; name: string; description?: string; requestedBy: "client" | "team" };
 import type { IReport } from "../models/report.model";
 import { User, type IUser } from "../models/user.model";
 import { env } from "../config/env";
@@ -140,6 +141,27 @@ export const emailPortalLogin = quietly(async (client: IClient, password: string
   });
 });
 
+// The team changed the client's sign-in email (and not the password: a new password's email
+// above carries the email too). Sent to the new address: only the email they sign in with now.
+export const emailSignInEmailChanged = quietly(async (client: IClient) => {
+  if (isOff(client, "portal_login", "email")) return;
+  await sendEmail({
+    to: client.email,
+    ...activityEmail({
+      name: client.contactName,
+      eyebrow: "Sign-in email changed",
+      tone: "alert",
+      title: "Your portal sign-in email was changed",
+      body: "Your BayShore team changed the email you sign in to your client portal with. Use it from now on; your password stays the same. If you didn't ask for this, reply to this email.",
+      details: [
+        ["Company", client.companyName],
+        ["Sign-in email", client.email],
+      ],
+      button: { label: "Sign in to your portal", url: clientUrl("/sign-in") },
+    }),
+  });
+});
+
 // ── Reports ──────────────────────────────────────────────────────────────────
 
 // A report moved on: handed in for review (the reviewers on the client hear), or published (the
@@ -188,7 +210,7 @@ export const emailReportStatus = quietly(async (report: IReport, actor: IUser) =
 
 // A project was started: by the team (the client hears), or asked for by the client (the staff
 // on it hear).
-export const emailProjectCreated = quietly(async (project: IProject, actor: IUser) => {
+export const emailProjectCreated = quietly(async (project: ProjectNews, actor: IUser) => {
   const client = await Client.findById(project.client).select("companyName accountManager team createdBy messagesOff").lean();
   if (!client) return;
 

@@ -13,6 +13,7 @@ import notificationRoutes from "./notification.route";
 import messageRoutes from "./message.route";
 import onboardingRoutes from "./onboarding.route";
 import dashboardRoutes from "./dashboard.route";
+import calendarRoutes from "./calendar.route";
 
 const router = Router();
 
@@ -52,6 +53,8 @@ router.use("/audit-logs", auditLogRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/messages", messageRoutes);
 router.use("/dashboard", dashboardRoutes);
+// The Calendar page. Its Google callback is open: Google sends the browser there.
+router.use("/calendar", calendarRoutes);
 // Open routes (no sign-in): the onboarding form, kept to its own answers by a key.
 router.use("/onboarding", onboardingRoutes);
 

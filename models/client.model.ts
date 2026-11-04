@@ -20,9 +20,9 @@ export type ClientPortalMenu = (typeof CLIENT_PORTAL_MENUS)[number];
 // bell, or both. The team turns any of them off for one client (`messagesOff`, as "message.email").
 // The welcome isn't here: it goes the moment the client is made, before anything can be set.
 export const CLIENT_MESSAGES = {
-  portal_login: ["email"],
-  onboarding_reminder: ["email"],
-  onboarding_call_booked: ["email"],
+  portal_login: ["email", "bell"],
+  onboarding_reminder: ["email", "bell"],
+  onboarding_call_booked: ["email", "bell"],
   content_sent: ["email", "bell"],
   content_resubmitted: ["email", "bell"],
   content_comment: ["email", "bell"],
@@ -30,8 +30,8 @@ export const CLIENT_MESSAGES = {
   message: ["email", "bell"],
   report_published: ["email", "bell"],
   project_created: ["email", "bell"],
-  onboarding_approved: ["bell"],
-  services_updated: ["bell"],
+  onboarding_approved: ["email", "bell"],
+  services_updated: ["email", "bell"],
 } as const;
 export type ClientMessage = keyof typeof CLIENT_MESSAGES;
 export type ClientMessageChannel = "email" | "bell";
@@ -264,12 +264,18 @@ export interface IClientOnboarding {
     leadSources: OnboardingLeadSource[];
   };
 
-  // Whether they say they booked the kickoff call. It is booked on a Google Calendar
-  // appointment schedule, which doesn't tell us — so this is the client's own word.
+  // Whether the kickoff call is booked: the client's own word ("I've booked my call"), or found
+  // on a Google Calendar the team connected (utils/bookingSync.ts), with when the call is.
   kickoffCall?: {
     booked?: boolean;
     // When they first said so — set here (the save hook below), never sent by a portal.
     bookedAt?: Date;
+    // When the call is, as the connected calendar has it. Only when it was found or booked there.
+    callAt?: Date;
+    // Booked in the portal (utils/booking.ts): the event on the booking calendar, and its Meet link.
+    eventId?: string;
+    calendar?: mongoose.Types.ObjectId;
+    meetLink?: string;
   };
 
   website?: {
@@ -408,6 +414,30 @@ export interface IClientServicePlan {
   // When it was first put on the client, and when it was marked done (set by the backend).
   addedAt?: Date;
   doneAt?: Date;
+  // A custom service is the client's project too (controllers/project.controller.ts). Its id
+  // there — given to every custom service — and what only the project side keeps.
+  project?: mongoose.Types.ObjectId;
+  // Before it is finished (`status: "done"`): not started yet, or being worked on.
+  stage?: ClientProjectStage;
+  priority?: ClientProjectPriority;
+  files?: IClientProjectFile[];
+  // Who asked for it: the client (from their portal), or the team.
+  requestedBy?: "client" | "team";
+  createdBy?: mongoose.Types.ObjectId;
+  // When work started on it (finished: `doneAt`; asked for: `addedAt`).
+  startedAt?: Date;
+}
+
+export const CLIENT_PROJECT_STAGES = ["new", "in_progress"] as const;
+export type ClientProjectStage = (typeof CLIENT_PROJECT_STAGES)[number];
+export const CLIENT_PROJECT_PRIORITIES = ["low", "normal", "high"] as const;
+export type ClientProjectPriority = (typeof CLIENT_PROJECT_PRIORITIES)[number];
+
+export interface IClientProjectFile {
+  url: string;
+  name: string;
+  size: number;
+  mimeType: string;
 }
 
 export interface IClientDetails {
@@ -834,7 +864,17 @@ const onboardingSchema = new Schema<IClientOnboarding>(
     },
 
     kickoffCall: {
-      type: new Schema({ booked: { type: Boolean }, bookedAt: { type: Date } }, { _id: false }),
+      type: new Schema(
+        {
+          booked: { type: Boolean },
+          bookedAt: { type: Date },
+          callAt: { type: Date },
+          eventId: { type: String },
+          calendar: { type: Schema.Types.ObjectId, ref: "GoogleCalendar" },
+          meetLink: { type: String },
+        },
+        { _id: false }
+      ),
     },
 
     website: {
@@ -982,6 +1022,16 @@ const clientServicePlanSchema = new Schema<IClientServicePlan>(
     status: { type: String, enum: CLIENT_SERVICE_PLAN_STATUSES },
     addedAt: { type: Date },
     doneAt: { type: Date },
+    project: { type: Schema.Types.ObjectId },
+    stage: { type: String, enum: CLIENT_PROJECT_STAGES },
+    priority: { type: String, enum: CLIENT_PROJECT_PRIORITIES },
+    files: {
+      type: [new Schema({ url: { type: String, required: true }, name: String, size: Number, mimeType: String }, { _id: false })],
+      default: undefined,
+    },
+    requestedBy: { type: String, enum: ["client", "team"] },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User" },
+    startedAt: { type: Date },
   },
   { _id: false }
 );

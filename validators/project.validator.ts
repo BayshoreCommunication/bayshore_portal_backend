@@ -58,7 +58,8 @@ export const createMyProjectRules: ValidationChain[] = [nameRule(body("name")), 
 export const updateMyProjectRules: ValidationChain[] = [nameRule(body("name").optional()), ...detailRules, noStatusRule];
 
 const filters: ValidationChain[] = [
-  query("status").optional().isIn(PROJECT_STATUSES).withMessage(`status ${oneOf(PROJECT_STATUSES)}`),
+  // "overdue": not done and past its deadline.
+  query("status").optional().isIn([...PROJECT_STATUSES, "overdue"]).withMessage(`status ${oneOf([...PROJECT_STATUSES, "overdue"])}`),
   query("priority").optional().isIn(PROJECT_PRIORITIES).withMessage(`priority ${oneOf(PROJECT_PRIORITIES)}`),
   query("q").optional().isString().trim().isLength({ max: 100 }),
   query("page").optional().isInt({ min: 1 }).toInt(),
@@ -67,6 +68,8 @@ const filters: ValidationChain[] = [
 
 export const listProjectsRules: ValidationChain[] = [
   query("client").optional().isMongoId().withMessage("client must be a valid id"),
+  // "client": every match under its client, with how they stand, and no pages.
+  query("group").optional().isIn(["client"]).withMessage("group must be client"),
   ...filters,
 ];
 
