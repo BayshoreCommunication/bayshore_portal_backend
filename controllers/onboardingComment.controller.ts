@@ -69,7 +69,7 @@ const spread = async (comment: IOnboardingComment, actor: IUser, side: "client" 
   emitToClient(String(comment.client), "onboarding:comment", viewOf(comment));
   const stepTitle = STEP_TITLES[comment.step] ?? comment.step;
   const step = comment.itemLabel ? `${stepTitle} · ${comment.itemLabel}` : stepTitle;
-  await announceOnboardingComment(comment.client, actor, step, said.text, said.files);
+  await announceOnboardingComment(comment.client, actor, { id: comment.step, title: step }, said.text, said.files);
   await notifyOnboardingComment(comment.client, actor, { side, step, stepId: comment.step, item: comment.item, text: said.text, attachments: said.files.length, reply });
 };
 

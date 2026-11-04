@@ -2,9 +2,10 @@ import type { Request, Response } from "express";
 import type { FilterQuery } from "mongoose";
 import { Client } from "../models/client.model";
 import { Content, type IContent } from "../models/content.model";
+import { Report } from "../models/report.model";
 import { Message, MessageRead, type IMessage, type MessageSide } from "../models/message.model";
 import { Notification } from "../models/notification.model";
-import type { IUser } from "../models/user.model";
+import { User, type IUser } from "../models/user.model";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { createMessageRealtimeTicket } from "../realtime/messagesRealtime";
 import { ApiError } from "../utils/ApiError";
@@ -77,6 +78,8 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
 
   const filter: FilterQuery<IMessage> = { client: clientId };
   if (req.query.content) filter.content = req.query.content;
+  // A report's comments: the messages tied to it.
+  if (req.query.report) filter.report = req.query.report;
   if (before) filter.createdAt = { $lt: before };
 
   const [page, readAt] = await Promise.all([
@@ -89,9 +92,22 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
   const hasMore = page.length > limit;
   const items = page.slice(0, limit).reverse();
 
+  // For the team: who a message sent by email reaches, and whether the client's message emails are on.
+  const email =
+    user.role === "client"
+      ? undefined
+      : await Promise.all([
+          Client.findById(clientId).select("messagesOff").lean(),
+          User.find({ role: "client", client: clientId, status: "active" }).select("email").lean(),
+        ]).then(([client, logins]) => ({
+          on: !client?.messagesOff?.includes("message.email"),
+          to: logins.map((login) => login.email).filter(Boolean),
+        }));
+
   return ApiResponse(res, 200, "Messages fetched successfully", {
     items,
     hasMore,
+    email,
     // When the caller last read the conversation, and how much the other side has written since.
     readAt: readAt ?? null,
     unread: await unreadIn(user, clientId, readAt),
@@ -177,6 +193,15 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
     content = found;
   }
 
+  // A comment on a report: the report must be this client's, and published — the client
+  // sees only those, so the team comments only on those too.
+  let report: { _id: IMessage["client"]; title: string } | undefined;
+  if (req.body.report) {
+    const found = await Report.findOne({ _id: req.body.report, client: clientId, status: "published" }).select("title");
+    if (!found) throw new ApiError(404, "Report not found");
+    report = { _id: found._id as IMessage["client"], title: found.title };
+  }
+
   const files = ((req.files ?? {}) as Record<string, Express.Multer.File[]>).files ?? [];
   const attachments = await uploadAttachments(files, "messages");
 
@@ -187,6 +212,9 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
       text: req.body.text ?? "",
       attachments,
       content,
+      report,
+      // The team's choice: by email too, or only in the portal. Left out, as before.
+      email: user.role === "client" || req.body.email === undefined ? undefined : String(req.body.email) === "true",
       meeting:
         kind === "meeting"
           ? {

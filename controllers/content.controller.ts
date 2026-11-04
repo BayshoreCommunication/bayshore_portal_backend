@@ -20,7 +20,7 @@ import { canAccessClient, clientScopeFor, visibleClientFilter } from "../utils/c
 import { CONTENT_REVIEW_ROLES } from "../utils/contentAccess";
 import { uploadToSpaces, deleteFromSpaces } from "../utils/uploadToSpaces";
 import { uploadAttachments } from "../utils/attachments";
-import { announceRevisionRequested, announceRevisionSubmitted } from "../utils/messages";
+import { announceContentComment, announceRevisionRequested, announceRevisionSubmitted } from "../utils/messages";
 import {
   forgetContentNotifications,
   notifyClientApproved,
@@ -659,7 +659,10 @@ export const addContentComment = asyncHandler(async (req: Request, res: Response
   if (resubmit) {
     await notifyContentResubmitted(content, requester);
     await announceRevisionSubmitted(content, requester, said.text, open?.number);
-  } else await notifyTeamReply(content, requester, req.body.text, attachments.length);
+  } else {
+    await notifyTeamReply(content, requester, req.body.text, attachments.length);
+    await announceContentComment(content, requester, said.text, attachments);
+  }
 
   return ApiResponse(res, 200, resubmit ? "Revised piece sent back for approval" : "Comment added", content);
 });
@@ -784,6 +787,7 @@ export const approveMyContent = asyncHandler(async (req: Request, res: Response)
   content.approvedBy = req.user!._id;
   await content.save();
   await notifyClientApproved(content, req.user!, comment);
+  await announceContentComment(content, req.user!, comment ? `Approved this piece.\n\n${comment}` : "Approved this piece.", []);
   await content.populate("createdBy approvedBy comments.user", "fullName");
 
   return ApiResponse(res, 200, "Content approved", content);
@@ -841,6 +845,7 @@ export const addMyContentComment = asyncHandler(async (req: Request, res: Respon
   await notifyClientFeedback(content, requester, req.body.text, attachments.length, asksForChanges);
   // A request for changes also shows up in the client's conversation with the team.
   if (round) await announceRevisionRequested(content, requester, req.body.text, attachments, round);
+  else await announceContentComment(content, requester, req.body.text ?? "", attachments);
   await content.populate("createdBy approvedBy comments.user", "fullName");
 
   return ApiResponse(res, 200, "Comment added", content);

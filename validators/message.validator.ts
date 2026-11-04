@@ -13,6 +13,7 @@ export const listMessagesRules: ValidationChain[] = [
   query("limit").optional().isInt({ min: 1, max: 100 }).toInt(),
   query("before").optional().isISO8601().withMessage("before must be a date"),
   query("content").optional().isMongoId().withMessage("Invalid content id"),
+  query("report").optional().isMongoId().withMessage("Invalid report id"),
 ];
 
 export const listConversationsRules: ValidationChain[] = [query("limit").optional().isInt({ min: 1, max: 100 }).toInt()];
@@ -33,6 +34,9 @@ export const sendMessageRules: ValidationChain[] = [
     .isLength({ max: MESSAGE_TEXT_MAX_LENGTH })
     .withMessage(`Message cannot exceed ${MESSAGE_TEXT_MAX_LENGTH} characters`),
   body("content").optional({ checkFalsy: true }).isMongoId().withMessage("Invalid content id"),
+  body("report").optional({ checkFalsy: true }).isMongoId().withMessage("Invalid report id"),
+  // From the team: send it by email too ("true") or only in the portal ("false").
+  body("email").optional().isBoolean().withMessage("email must be true or false"),
 
   body("meeting.title")
     .if((_value, { req }) => isMeeting(req))

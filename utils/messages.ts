@@ -1,7 +1,7 @@
 import type mongoose from "mongoose";
 import { Client } from "../models/client.model";
 import type { IContent, IContentFile } from "../models/content.model";
-import { Message, type IMessage, type IMessageMeeting, type MessageKind, type MessageSide } from "../models/message.model";
+import { Message, MESSAGE_TEXT_MAX_LENGTH, type IMessage, type IMessageMeeting, type MessageKind, type MessageSide } from "../models/message.model";
 import { Notification, NOTIFICATION_BODY_MAX_LENGTH, NOTIFICATION_TITLE_MAX_LENGTH } from "../models/notification.model";
 import { User, type IUser } from "../models/user.model";
 import { emitNewMessage, emitToUsers } from "../realtime/messagesRealtime";
@@ -41,9 +41,13 @@ const whenOf = (meeting: IMessageMeeting) =>
 // Tells the other side. Messages nobody has read yet are one notification, not one each: a
 // second message before the first is read updates it ("3 new messages") instead of adding to
 // the pile. A notification is a courtesy — it never fails the message it reports.
-const notifyOtherSide = async (message: IMessage, actor: IUser) => {
+// `emailChoice`: the team said whether this one goes by email — true sends it to every login
+// (when the client's message emails are on), false sends none; left out, the first unread does.
+const notifyOtherSide = async (message: IMessage, actor: IUser, emailChoice?: boolean) => {
   try {
-    const { recipients, company, bell, email } = await otherSideOf(message.client, message.side, actor._id);
+    const sides = await otherSideOf(message.client, message.side, actor._id);
+    const { recipients, company, bell } = sides;
+    const email = sides.email && emailChoice !== false;
     if (recipients.length === 0 || (!bell && !email)) return;
 
     const from = message.side === "team" ? "BayShore" : company;
@@ -53,9 +57,18 @@ const notifyOtherSide = async (message: IMessage, actor: IUser) => {
         : message.text?.trim()
           ? `“${message.text.trim()}”`
           : `${message.attachments.length} ${message.attachments.length === 1 ? "file" : "files"} attached`;
-    // The piece's own page when the message is about one; otherwise the conversation —
-    // which staff open by client.
-    const link = message.content ? `/content/${message.content}` : message.side === "client" ? `/messages?client=${message.client}` : "/messages";
+    // The piece's or report's own page when the message is about one; otherwise the
+    // conversation — which staff open by client.
+    const toTeam = message.side === "client";
+    const link = message.content
+      ? `/content/${message.content}`
+      : message.report
+        ? toTeam
+          ? `/monthly-reports/${message.report}/edit`
+          : `/reports/${message.report}`
+        : toTeam
+          ? `/messages?client=${message.client}`
+          : "/messages";
 
     // Those with nothing unread from this conversation yet: they get an email too. A second
     // message before the first is read only updates the notification.
@@ -68,7 +81,9 @@ const notifyOtherSide = async (message: IMessage, actor: IUser) => {
         const title =
           message.kind === "meeting"
             ? `${from} scheduled a meeting`
-            : count === 1
+            : message.report && count === 1
+              ? `${from} commented on ${message.reportTitle ?? "a report"}`
+              : count === 1
               ? `${from} sent ${message.side === "team" ? "you " : ""}a message`
               : `${from} sent ${message.side === "team" ? "you " : ""}${count} messages`;
         const fields = {
@@ -92,7 +107,9 @@ const notifyOtherSide = async (message: IMessage, actor: IUser) => {
         }
       })
     );
-    if (fresh.length && email) await emailNewMessage(fresh, { side: message.side, from: message.side === "team" ? actor.fullName : company, title: firstTitle, body: clip(body, 280), link });
+    const emailTo = emailChoice ? recipients : fresh;
+    if (!firstTitle) firstTitle = clip(`${from} sent ${message.side === "team" ? "you " : ""}a message`, NOTIFICATION_TITLE_MAX_LENGTH);
+    if (emailTo.length && email) await emailNewMessage(emailTo, { side: message.side, from: message.side === "team" ? actor.fullName : company, title: firstTitle, body: clip(body, 280), link });
     // Their bell can update at once instead of at its next poll.
     if (bell) emitToUsers(recipients.map(String), "notifications:new", { type: "message", client: String(message.client) });
   } catch (error) {
@@ -112,9 +129,18 @@ export const postMessage = async (
     text?: string;
     attachments?: IContentFile[];
     content?: Pick<IContent, "_id" | "title">;
+    report?: { _id: Id; title: string };
     meeting?: IMessageMeeting;
+    // From the team: whether it goes to the client by email too (see notifyOtherSide).
+    email?: boolean;
   }
 ) => {
+  // Whether it will reach them by email: chosen, the client's message emails on, and someone to send to.
+  const emailed =
+    input.email && sideOf(actor) === "team"
+      ? (await Client.exists({ _id: input.client, messagesOff: { $ne: "message.email" } })) !== null &&
+        (await User.exists({ role: "client", client: input.client, status: "active" })) !== null
+      : undefined;
   const message = await Message.create({
     client: input.client,
     kind: input.kind ?? "text",
@@ -125,10 +151,13 @@ export const postMessage = async (
     attachments: input.attachments ?? [],
     content: input.content?._id,
     contentTitle: input.content?.title,
+    report: input.report?._id,
+    reportTitle: input.report?.title,
     meeting: input.meeting,
+    emailed: emailed || undefined,
   });
   emitNewMessage(String(message.client), message.toJSON());
-  await notifyOtherSide(message, actor);
+  await notifyOtherSide(message, actor, sideOf(actor) === "team" ? input.email : undefined);
   return message;
 };
 
@@ -180,9 +209,10 @@ export const announceServiceRequest = async (clientId: Id, actor: IUser, text: s
 };
 
 // A comment on a step of the client's onboarding form, in their conversation too — where it
-// happened in time. Its notification goes out on its own (notifyOnboardingComment), so this adds
-// none; and like the other automatic messages, it never fails the comment it reports.
-export const announceOnboardingComment = async (clientId: Id, actor: IUser, step: string, text: string, attachments: IContentFile[]) => {
+// happened in time, tagged with its step. Its notification goes out on its own
+// (notifyOnboardingComment), so this adds none; and like the other automatic messages, it never
+// fails the comment it reports.
+export const announceOnboardingComment = async (clientId: Id, actor: IUser, step: { id: string; title: string }, text: string, attachments: IContentFile[]) => {
   try {
     const message = await Message.create({
       client: clientId,
@@ -190,8 +220,32 @@ export const announceOnboardingComment = async (clientId: Id, actor: IUser, step
       side: sideOf(actor),
       sender: actor._id,
       senderName: actor.fullName,
-      text: `On the onboarding form · ${step}${text ? `\n\n${text}` : ""}`,
+      text: clip(text, MESSAGE_TEXT_MAX_LENGTH),
       attachments,
+      onboardingStep: step.id,
+      onboardingStepTitle: step.title,
+    });
+    emitNewMessage(String(message.client), message.toJSON());
+  } catch (error) {
+    console.error("Automatic message failed:", error);
+  }
+};
+
+// A comment on a piece of content (one that asks for no change, or a team reply), in the
+// conversation too, tied to the piece. The content notifications already tell the other side,
+// so this adds none.
+export const announceContentComment = async (content: IContent, actor: IUser, text: string, attachments: IContentFile[]) => {
+  try {
+    const message = await Message.create({
+      client: content.client,
+      kind: "text",
+      side: sideOf(actor),
+      sender: actor._id,
+      senderName: actor.fullName,
+      text: clip(text, MESSAGE_TEXT_MAX_LENGTH),
+      attachments,
+      content: content._id,
+      contentTitle: content.title,
     });
     emitNewMessage(String(message.client), message.toJSON());
   } catch (error) {

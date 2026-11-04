@@ -63,8 +63,20 @@ export interface IMessage extends Document {
   // Which revision of that piece, for the automatic revision messages.
   revision?: number;
 
+  // The report it is about: a comment on a report is a message in the conversation, tied to
+  // that report (its page shows them). The title is kept as it was.
+  report?: mongoose.Types.ObjectId;
+  reportTitle?: string;
+
+  // A comment on the onboarding form, copied here: which step (its id, and its title as shown).
+  onboardingStep?: string;
+  onboardingStepTitle?: string;
+
   // The meeting, for a meeting message.
   meeting?: IMessageMeeting;
+
+  // Sent to the client by email too — the team chooses, message by message.
+  emailed?: boolean;
 
   createdAt: Date;
 }
@@ -87,6 +99,10 @@ export interface IMessage extends Document {
  *         content: { type: string, description: The piece of content it is about, if any }
  *         contentTitle: { type: string }
  *         revision: { type: integer, description: Which revision of that piece, on the automatic revision messages }
+ *         report: { type: string, description: The report it is about — a comment on that report }
+ *         reportTitle: { type: string }
+ *         onboardingStep: { type: string, description: The onboarding form step a copied comment is on }
+ *         onboardingStepTitle: { type: string }
  *         meeting:
  *           type: object
  *           properties:
@@ -95,6 +111,7 @@ export interface IMessage extends Document {
  *             endsAt: { type: string, format: date-time }
  *             location: { type: string }
  *             link: { type: string }
+ *         emailed: { type: boolean, description: Sent to the client by email too }
  *         createdAt: { type: string, format: date-time }
  */
 
@@ -157,7 +174,15 @@ const messageSchema = new Schema<IMessage>(
     contentTitle: { type: String, trim: true },
     revision: { type: Number },
 
+    report: { type: Schema.Types.ObjectId, ref: "Report" },
+    reportTitle: { type: String, trim: true },
+
+    onboardingStep: { type: String, trim: true },
+    onboardingStepTitle: { type: String, trim: true },
+
     meeting: { type: messageMeetingSchema },
+
+    emailed: { type: Boolean },
   },
   { timestamps: { createdAt: true, updatedAt: false }, versionKey: false }
 );
@@ -165,6 +190,7 @@ const messageSchema = new Schema<IMessage>(
 // A conversation, newest first — and the part of it about one piece.
 messageSchema.index({ client: 1, createdAt: -1 });
 messageSchema.index({ client: 1, content: 1, createdAt: -1 });
+messageSchema.index({ client: 1, report: 1, createdAt: -1 });
 
 messageSchema.pre("validate", function () {
   // Something a person writes needs words, files, or both; a meeting needs its details.
