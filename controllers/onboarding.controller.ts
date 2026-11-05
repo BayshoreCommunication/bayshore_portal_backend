@@ -28,6 +28,7 @@ import { ONBOARDING_KEY_HEADER, ONBOARDING_SECTIONS } from "../validators/onboar
 import { seal, unseal } from "../utils/secretBox";
 import { deleteFromSpaces, uploadToSpaces } from "../utils/uploadToSpaces";
 import { callBookedOf, emailCallBooked } from "../utils/onboardingEmails";
+import { lookUpCall } from "../utils/bookingSync";
 import { notifyCallBooked, notifyClientCallBooked } from "../utils/notifications";
 import { answersOfItems, askedItemsOf } from "../utils/onboardingUpdates";
 import { canAccessClient } from "../utils/clientAccess";
@@ -381,13 +382,17 @@ export const updateMyOnboarding = asyncHandler(async (req: Request, res: Respons
   await client.save();
   if (isMainLogin) await login.save();
 
-  // They've just said they booked their onboarding call ("I've booked my call"): confirm it.
-  // Not waited for, and sent once however often it is said again (utils/onboardingEmails.ts).
-  // The team hears of it in their bell at once.
+  // They've just said they booked their onboarding call ("I've booked my call"). The team hears of
+  // it in their bell at once. The client's confirmation waits for the call itself: it is looked
+  // for on the connected calendars now, so the email has its date, time and Meet link — and, not
+  // there yet, by the five-minute check (utils/bookingSync.ts), which sends it without a time if
+  // nothing turns up within half an hour. Booked in the portal, it has them already.
   if (!wasBooked && callBookedOf(client)) {
-    void emailCallBooked(client);
-    void notifyClientCallBooked(client._id, client.onboarding?.kickoffCall?.callAt);
     void notifyCallBooked(client._id, login);
+    if (client.onboarding?.kickoffCall?.callAt) {
+      void emailCallBooked(client);
+      void notifyClientCallBooked(client._id, client.onboarding.kickoffCall.callAt);
+    } else void lookUpCall(client._id);
   }
 
   return ApiResponse(res, 200, req.body.submit === true ? "Onboarding submitted" : "Onboarding saved", viewOf(client));

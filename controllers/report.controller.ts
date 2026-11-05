@@ -125,6 +125,15 @@ export const createReport = asyncHandler(async (req: Request, res: Response) => 
   const client = await Client.exists({ $and: [{ _id: clientId }, clientScopeFor(requester)] });
   if (!client) throw new ApiError(404, "Client not found");
 
+  // One report per client and period: the one already there is named, so the page can open it.
+  const existing = await Report.findOne({ client: clientId, periodType, periodStart: new Date(periodStart) }).select("_id title status").lean();
+  if (existing) {
+    throw new ApiError(409, `${existing.title || "A report for this period"} already exists for this client (${existing.status}). Open it to keep working on it.`, [], {
+      existingId: String(existing._id),
+      status: existing.status,
+    });
+  }
+
   const report = new Report({ client: clientId, periodType, periodStart, periodEnd });
   applyContent(report, req.body);
   await duplicateAware(() => report.save());

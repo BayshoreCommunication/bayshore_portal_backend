@@ -1,5 +1,6 @@
 import { env } from "../config/env";
 import { Client, type IClient } from "../models/client.model";
+import { DEFAULT_BOOKING_HOURS, GoogleCalendar } from "../models/googleCalendar.model";
 import { activityEmail, emailReady, sendEmail, type ActivityEmail } from "./email";
 import { isOff } from "./clientMessages";
 import { notifyOnboardingReminder } from "./notifications";
@@ -82,6 +83,28 @@ export const emailOnboardingWelcome = async (client: IClient): Promise<void> => 
 
 // ── 3. Call booked ───────────────────────────────────────────────────────────
 
+// When the call is, as the booking calendar's time zone has it ("Thursday, Nov 6, 2026 at 10:00 AM
+// EST"), and the link to join — when it is known (booked in the portal, or found on a calendar).
+const callDetailsOf = async (client: IClient) => {
+  const call = client.onboarding?.kickoffCall;
+  if (!call?.callAt) return { details: [] as [string, string][], meetLink: undefined };
+  const account = call.calendar ? await GoogleCalendar.findById(call.calendar).select("booking").lean() : null;
+  const timeZone = account?.booking?.timeZone || DEFAULT_BOOKING_HOURS.timeZone;
+  const when = new Date(call.callAt).toLocaleString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone,
+    timeZoneName: "short",
+  });
+  const details: [string, string][] = [["When", when]];
+  if (call.meetLink) details.push(["Where", "Google Meet"]);
+  return { details, meetLink: call.meetLink };
+};
+
 // The client says they've booked their onboarding call. Sent once, however often it is said: the
 // send is claimed on the record first, and given back if it can't go out, so a later save tries again.
 export const emailCallBooked = async (client: IClient): Promise<void> => {
@@ -93,7 +116,9 @@ export const emailCallBooked = async (client: IClient): Promise<void> => {
     );
     if (!claimed.modifiedCount) return;
 
-    // No date or time: the booking is on Google Calendar, which doesn't tell us.
+    // When it is and the link to join, when known (a call booked on Google's own page, and not
+    // found on a connected calendar, has neither).
+    const { details, meetLink } = await callDetailsOf(client);
     const sent = await send(client, {
       eyebrow: "Call booked",
       tone: "success",
@@ -104,6 +129,8 @@ export const emailCallBooked = async (client: IClient): Promise<void> => {
           : "Thanks for booking your onboarding call. Here's what happens next.",
         "On your onboarding call, one of our marketing specialists will:",
       ],
+      ...(details.length ? { details } : {}),
+      ...(meetLink ? { button: { label: "Join with Google Meet", url: meetLink } } : {}),
       list: { title: "On the call", items: ON_THE_CALL },
       closing: "If you skipped something or weren't sure of an answer, don't worry. We'll sort it out together on the call.",
       signOff: ["Talk soon,", "Team BayShore"],
@@ -111,6 +138,26 @@ export const emailCallBooked = async (client: IClient): Promise<void> => {
     if (!sent) await Client.updateOne({ _id: client._id }, { $unset: { "onboardingEmails.callBookedSentAt": "" } });
   } catch (error) {
     logFailure("call booked", error);
+  }
+};
+
+// They moved their call to another time (booked again in the portal): the new time, and the link.
+export const emailCallMoved = async (client: IClient): Promise<void> => {
+  if (!emailReady || isOff(client, "onboarding_call_booked", "email")) return;
+  try {
+    const { details, meetLink } = await callDetailsOf(client);
+    if (!details.length) return;
+    await send(client, {
+      eyebrow: "Call moved",
+      tone: "success",
+      title: "Your onboarding call has a new time",
+      body: "Your onboarding call was moved. Here are the new details — Google is sending an updated invite too.",
+      details,
+      ...(meetLink ? { button: { label: "Join with Google Meet", url: meetLink } } : {}),
+      signOff: ["Talk soon,", "Team BayShore"],
+    });
+  } catch (error) {
+    logFailure("call moved", error);
   }
 };
 

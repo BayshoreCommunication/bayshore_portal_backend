@@ -1,6 +1,7 @@
 import type mongoose from "mongoose";
 import { env } from "../config/env";
 import { Client } from "../models/client.model";
+import { GoogleCalendar } from "../models/googleCalendar.model";
 import { ClientService } from "../models/clientService.model";
 import { Content } from "../models/content.model";
 import { Lead } from "../models/lead.model";
@@ -13,6 +14,7 @@ import { Report } from "../models/report.model";
 import { User } from "../models/user.model";
 import { emitToUsers } from "../realtime/messagesRealtime";
 import { deleteFromSpaces } from "./uploadToSpaces";
+import { deleteEvent } from "./googleCalendar";
 
 // Everything kept for a client, removed with it: its logins, content, onboarding comments,
 // messages, notifications, projects, reports, leads and services — and the files of all of
@@ -61,5 +63,15 @@ export const removeClientData = async (clientIds: Id[]) => {
 
   // Best effort — an unreachable file store shouldn't fail the delete.
   await Promise.allSettled([...files].map((url) => deleteFromSpaces(url)));
+  // Their onboarding call, booked in the portal, comes off the team's calendar too: there is no
+  // one left to meet. Best effort, like the files.
+  await Promise.allSettled(
+    clients.map(async (client) => {
+      const call = client.onboarding?.kickoffCall;
+      if (!call?.eventId || !call.calendar || (call.callAt && new Date(call.callAt).getTime() < Date.now())) return;
+      const account = await GoogleCalendar.findById(call.calendar).select("+refreshTokenSealed");
+      if (account) await deleteEvent(account, call.eventId);
+    })
+  );
   return { files: files.size };
 };

@@ -3,7 +3,7 @@ import { DEFAULT_BOOKING_HOURS, GoogleCalendar, type IBookingHours, type IGoogle
 import { User } from "../models/user.model";
 import { ApiError } from "./ApiError";
 import { busyOf, createEvent, deleteEvent, videoLinkOf } from "./googleCalendar";
-import { callBookedOf, emailCallBooked } from "./onboardingEmails";
+import { callBookedOf, emailCallBooked, emailCallMoved } from "./onboardingEmails";
 import { notifyCallBooked, notifyClientCallBooked } from "./notifications";
 
 // Clients book their onboarding call in the portal itself: the free times on the booking calendar
@@ -163,6 +163,10 @@ export const bookCall = async (client: IClient, start: Date) => {
     void notifyClientCallBooked(client._id, start);
     const login = client.user ? await User.findById(client.user) : null;
     if (login) void notifyCallBooked(client._id, login);
+  } else if (!before?.callAt || new Date(before.callAt).getTime() !== start.getTime()) {
+    // Booked before — on Google's page, or here at another time: this is the time now.
+    void (before?.callAt ? emailCallMoved(client) : emailCallBooked(client));
+    void notifyClientCallBooked(client._id, start);
   }
   return bookedCallOf(client);
 };

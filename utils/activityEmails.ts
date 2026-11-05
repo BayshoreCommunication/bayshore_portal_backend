@@ -23,14 +23,17 @@ type Id = mongoose.Types.ObjectId;
 type Person = { fullName: string; email?: string };
 type Look = Omit<ActivityEmail, "name">;
 
+// What the work gives back (whether an email went, for some) comes back too: undefined when email
+// isn't set up or it failed.
 const quietly =
-  <Args extends unknown[]>(work: (...args: Args) => Promise<unknown>) =>
-  async (...args: Args): Promise<void> => {
-    if (!emailReady) return;
+  <Args extends unknown[], Result>(work: (...args: Args) => Promise<Result>) =>
+  async (...args: Args): Promise<Result | undefined> => {
+    if (!emailReady) return undefined;
     try {
-      await work(...args);
+      return await work(...args);
     } catch (error) {
       console.error("Activity email failed:", error);
+      return undefined;
     }
   };
 
@@ -66,11 +69,14 @@ const day = (date?: Date) => (date ? new Date(date).toLocaleDateString("en-US", 
 // login: the email to sign in with and the password the team set — and word to the staff put on it.
 // A client given a login who still has onboarding to do is asked, as one who signs up is, to fill
 // in the onboarding form and book the onboarding call (utils/onboardingEmails.ts).
-export const emailClientAdded = quietly(async (client: IClient, actor: IUser, password?: string) => {
+// Returns whether the client's welcome went out (the staff's notes are a courtesy beside it).
+export const emailClientAdded = async (client: IClient, actor: IUser, password?: string): Promise<boolean> => {
+  if (!emailReady) return false;
+  try {
   const manager = client.accountManager ? await User.findById(client.accountManager).select("fullName email").lean() : null;
   const onboarding = password && onboardingDue(client);
 
-  await sendEmail({
+  const sent = await sendEmail({
     to: client.email,
     ...activityEmail({
       name: client.contactName,
@@ -110,29 +116,38 @@ export const emailClientAdded = quietly(async (client: IClient, actor: IUser, pa
     button: { label: "Open the client", url: teamUrl(`/clients/${client._id}`) },
     audience: "team",
   });
-});
+  return sent;
+  } catch (error) {
+    console.error("Welcome email failed:", error);
+    return false;
+  }
+};
 
 // The team gave an existing client a portal login, or set a new password for theirs: the
-// client gets the email to sign in with and the password.
-export const emailPortalLogin = quietly(async (client: IClient, password: string, created: boolean) => {
-  if (isOff(client, "portal_login", "email")) return;
+// client gets the email to sign in with and the password — at the new address, when the email
+// was changed in the same save (`emailChanged`). Returns whether it went.
+export const emailPortalLogin = quietly(async (client: IClient, password: string, created: boolean, emailChanged = false) => {
+  if (isOff(client, "portal_login", "email")) return false;
   // A first login for a client with onboarding still to do: ask for it, as the welcome does.
   const onboarding = created && onboardingDue(client);
-  await sendEmail({
+  const both = !created && emailChanged;
+  return sendEmail({
     to: client.email,
     ...activityEmail({
       name: client.contactName,
-      eyebrow: created ? "Your portal is ready" : "Password changed",
+      eyebrow: created ? "Your portal is ready" : both ? "Sign-in details changed" : "Password changed",
       tone: created ? "success" : "alert",
-      title: created ? "Your BayShore client portal login" : "Your portal password was changed",
+      title: created ? "Your BayShore client portal login" : both ? "Your portal sign-in email and password were changed" : "Your portal password was changed",
       body: created
         ? "Your BayShore team set up your client portal. Sign in with the details below. Please keep your password private."
-        : "Your BayShore team set a new password for your client portal. Sign in with the details below. If you didn't ask for this, reply to this email.",
+        : both
+          ? "Your BayShore team changed the email you sign in with and set a new password. Use the details below from now on. If you didn't ask for this, reply to this email."
+          : "Your BayShore team set a new password for your client portal. Sign in with the details below. If you didn't ask for this, reply to this email.",
       list: onboarding ? onboardingSteps(client) : undefined,
       details: [
         ["Company", client.companyName],
-        ["Sign-in email", client.email],
-        ["Password", password],
+        [both ? "New sign-in email" : "Sign-in email", client.email],
+        [created ? "Password" : "New password", password],
       ],
       button: onboarding
         ? { label: "Sign in and get started", url: clientUrl(`/sign-in?callbackUrl=${encodeURIComponent("/onboarding")}`) }
@@ -143,9 +158,10 @@ export const emailPortalLogin = quietly(async (client: IClient, password: string
 
 // The team changed the client's sign-in email (and not the password: a new password's email
 // above carries the email too). Sent to the new address: only the email they sign in with now.
+// Returns whether it went.
 export const emailSignInEmailChanged = quietly(async (client: IClient) => {
-  if (isOff(client, "portal_login", "email")) return;
-  await sendEmail({
+  if (isOff(client, "portal_login", "email")) return false;
+  return sendEmail({
     to: client.email,
     ...activityEmail({
       name: client.contactName,
@@ -155,9 +171,29 @@ export const emailSignInEmailChanged = quietly(async (client: IClient) => {
       body: "Your BayShore team changed the email you sign in to your client portal with. Use it from now on; your password stays the same. If you didn't ask for this, reply to this email.",
       details: [
         ["Company", client.companyName],
-        ["Sign-in email", client.email],
+        ["New sign-in email", client.email],
       ],
       button: { label: "Sign in to your portal", url: clientUrl("/sign-in") },
+    }),
+  });
+});
+
+// …and a word to the address they used to sign in with: it no longer works, and which one does —
+// so a change they didn't ask for doesn't go unnoticed.
+export const emailSignInEmailMoved = quietly(async (client: IClient, oldEmail: string) => {
+  if (isOff(client, "portal_login", "email")) return false;
+  return sendEmail({
+    to: oldEmail,
+    ...activityEmail({
+      name: client.contactName,
+      eyebrow: "Sign-in email changed",
+      tone: "alert",
+      title: "This email no longer signs in to your portal",
+      body: `Your BayShore team changed the email you sign in to your client portal with. From now on, sign in with ${client.email}. If you didn't ask for this, reply to this email.`,
+      details: [
+        ["Company", client.companyName],
+        ["New sign-in email", client.email],
+      ],
     }),
   });
 });

@@ -7,7 +7,7 @@ import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
 import { clientScopeFor as scopeFor } from "../utils/clientAccess";
-import { emailClientAdded, emailPortalLogin, emailSignInEmailChanged } from "../utils/activityEmails";
+import { emailClientAdded, emailPortalLogin, emailSignInEmailChanged, emailSignInEmailMoved } from "../utils/activityEmails";
 import { notifyLoginChanged, notifyOnboardingApproved, notifyServicesUpdated } from "../utils/notifications";
 import { droppedFiles, plansOf, stampPlans } from "../utils/clientServicePlans";
 import { deleteFromSpaces } from "../utils/uploadToSpaces";
@@ -226,11 +226,11 @@ export const createClient = asyncHandler(async (req: Request, res: Response) => 
     throw error;
   }
 
-  // A welcome to the client — with their sign-in email and password, when they were given a
-  // login — and word to the staff put on it.
-  await emailClientAdded(client, requester, withLogin ? password : undefined);
+  // A welcome to the client — with their sign-in email and password — and word to the staff put
+  // on it. The page that added them says whether the welcome went.
+  const welcomeEmailed = await emailClientAdded(client, requester, withLogin ? password : undefined);
 
-  return ApiResponse(res, 201, "Client created successfully", { client, user });
+  return ApiResponse(res, 201, "Client created successfully", { client, user, welcomeEmailed });
 });
 
 // GET /clients/me/portal — the pages of the portal the signed-in client is shown. A client
@@ -360,8 +360,9 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   }
   await assertStaff([accountManager, ...(team ?? [])]);
 
-  // The client hears when the way they sign in changes (below).
+  // The client hears when the way they sign in changes (below) — at the old address too.
   const emailChanged = email !== undefined && email !== client.email;
+  const oldEmail = client.email;
   if (contactName !== undefined) client.contactName = contactName;
   if (companyName !== undefined) client.companyName = companyName;
   if (email !== undefined) client.email = email;
@@ -437,8 +438,11 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   if (password && loginUser) await RefreshToken.deleteMany({ user: loginUser._id });
   // The client gets the way in: their sign-in email and the password just set — or, with only
   // the email changed, that email. And their bell says so at once.
-  if (password && loginUser) await emailPortalLogin(client, password, loginCreated);
-  else if (emailChanged && loginUser) await emailSignInEmailChanged(client);
+  // Whether the client was emailed their new sign-in details (the page that saved says so).
+  let loginEmailed: boolean | undefined;
+  if (password && loginUser) loginEmailed = Boolean(await emailPortalLogin(client, password, loginCreated, emailChanged));
+  else if (emailChanged && loginUser) loginEmailed = Boolean(await emailSignInEmailChanged(client));
+  if (emailChanged && loginUser && !loginCreated) await emailSignInEmailMoved(client, oldEmail);
   if (loginUser && !loginCreated && (password || emailChanged)) {
     await notifyLoginChanged(client._id, requester, { email: emailChanged ? client.email : undefined, password: Boolean(password) });
   }
@@ -454,7 +458,7 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
     await User.updateMany({ client: client._id }, { status: USER_STATUS_FOR[client.status] });
   }
 
-  return ApiResponse(res, 200, "Client updated successfully", client);
+  return ApiResponse(res, 200, "Client updated successfully", loginEmailed === undefined ? client : Object.assign(client.toJSON(), { loginEmailed }));
 });
 
 export const deleteClient = asyncHandler(async (req: Request, res: Response) => {

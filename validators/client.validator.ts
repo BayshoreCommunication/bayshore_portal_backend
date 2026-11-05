@@ -73,10 +73,14 @@ export const createClientRules: ValidationChain[] = [
   // A client can be saved before their services are chosen.
   body("serviceTypes").optional().isArray().withMessage("serviceTypes must be a list"),
   body("startDate").isISO8601().withMessage("Start date must be a valid date"),
-  // Only for a client who gets a portal login: without one, no login is made.
+  // Every client added gets a portal login, and its password goes to them in the welcome email.
   body("password")
-    .optional({ checkFalsy: true })
     .isString()
+    .withMessage("A portal password is required")
+    .bail()
+    .notEmpty()
+    .withMessage("A portal password is required")
+    .bail()
     .isLength({ min: 8, max: 72 })
     .withMessage("The portal password must be between 8 and 72 characters"),
   ...optionalFields,

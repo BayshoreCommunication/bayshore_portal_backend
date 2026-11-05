@@ -35,6 +35,7 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
     success: false,
     message: error.message,
     errors: error.errors,
+    ...(error.data !== undefined ? { data: error.data } : {}),
     ...(env.isProduction ? {} : { stack: err.stack }),
   });
 };
