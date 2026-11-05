@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getOverview } from "../controllers/dashboard.controller";
+import { getMyDashboard, getOverview } from "../controllers/dashboard.controller";
 import { protect, authorize } from "../middleware/auth";
 import { USER_ROLES, type UserRole } from "../models/user.model";
 
@@ -30,5 +30,23 @@ const STAFF_ROLES = USER_ROLES.filter((role) => role !== "client") as UserRole[]
  *         description: Dashboard fetched successfully
  */
 router.get("/overview", protect, authorize(...STAFF_ROLES), getOverview);
+
+/**
+ * @swagger
+ * /dashboard/me:
+ *   get:
+ *     summary: The client portal's dashboard, in one call
+ *     description: >
+ *       The signed-in client's published reports (newest first, with figures), the leads they
+ *       collected this month against the same stretch of last month, the content waiting on their
+ *       decision, and their meetings in the next 60 days.
+ *     tags: [Dashboard]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Dashboard fetched
+ */
+router.get("/me", protect, authorize("client"), getMyDashboard);
 
 export default router;

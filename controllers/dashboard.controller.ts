@@ -9,6 +9,8 @@ import { Message } from "../models/message.model";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
 import { clientScopeFor, visibleClientFilter } from "../utils/clientAccess";
+import { ApiError } from "../utils/ApiError";
+import { clientMeetings } from "../utils/clientMeetings";
 
 // ── The staff dashboard ──────────────────────────────────────────────────────
 
@@ -245,6 +247,75 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
         client: companyOf(message.client),
       })),
       total: meetingCount,
+    },
+  });
+});
+
+// ── The client's own dashboard (client portal) ───────────────────────────────
+
+// How many published reports come back: enough to compare the latest with the one before and
+// draw six months (or weeks) of each channel.
+const MY_REPORTS = 12;
+// The pieces waiting on the client, and the meetings coming up, the dashboard lists.
+const MY_CONTENT = 8;
+const MY_MEETINGS = 5;
+// How far ahead the meetings are looked for.
+const MY_MEETINGS_AHEAD = 60 * DAY;
+
+// GET /dashboard/me — everything the client portal's dashboard shows, in one call: their
+// published reports with the figures (for the cards and the channel charts), the leads they
+// collected this month against the same stretch of last month, the content waiting on their
+// decision, and their next meetings with the team. A part that can't be read (a calendar
+// that doesn't answer) is left empty rather than failing the rest.
+export const getMyDashboard = asyncHandler(async (req: Request, res: Response) => {
+  const clientId = req.user!.client;
+  if (!clientId) throw new ApiError(403, "This account is not linked to a client");
+  const now = new Date();
+  const thisMonth = monthStart(now);
+  const lastMonth = monthStart(now, -1);
+
+  const [reports, leadsNow, leadsBefore, leadsAll, waiting, needDecision, meetings] = await Promise.all([
+    Report.find({ client: clientId, status: "published" })
+      .sort({ periodStart: -1, _id: -1 })
+      .limit(MY_REPORTS)
+      .select("-createdBy -submittedAt -approvedBy -approvedAt -publishedBy -__v")
+      .lean(),
+    Lead.countDocuments({ client: clientId, createdAt: { $gte: thisMonth, $lte: now } }),
+    Lead.countDocuments({ client: clientId, createdAt: { $gte: lastMonth, $lt: sameTimeLastMonth(now) } }),
+    Lead.countDocuments({ client: clientId }),
+    // Sent back to them for a decision, or waiting on the team's revision they asked for.
+    Content.find({ client: clientId, status: { $in: ["pending_approval", "revision_requested"] } })
+      .sort({ status: 1, updatedAt: -1 })
+      .limit(MY_CONTENT)
+      .select("title type status submittedAt updatedAt revisionCount")
+      .lean(),
+    Content.countDocuments({ client: clientId, status: "pending_approval" }),
+    clientMeetings(clientId, req.user!.email, now, new Date(now.getTime() + MY_MEETINGS_AHEAD)).catch(() => ({ meetings: [], partial: true })),
+  ]);
+
+  return ApiResponse(res, 200, "Dashboard fetched", {
+    reports,
+    leads: {
+      thisMonth: leadsNow,
+      // The same stretch of last month (1st up to today's date and time).
+      lastMonth: leadsBefore,
+      allTime: leadsAll,
+    },
+    content: {
+      // Waiting on their approval now.
+      needDecision,
+      items: waiting.map((piece) => ({
+        _id: String(piece._id),
+        title: piece.title,
+        type: piece.type,
+        status: piece.status,
+        at: piece.status === "pending_approval" ? (piece.submittedAt ?? piece.updatedAt) : piece.updatedAt,
+        revision: piece.revisionCount,
+      })),
+    },
+    meetings: {
+      items: meetings.meetings.filter((meeting) => new Date(String(meeting.end)).getTime() > now.getTime()).slice(0, MY_MEETINGS),
+      partial: meetings.partial,
     },
   });
 });
