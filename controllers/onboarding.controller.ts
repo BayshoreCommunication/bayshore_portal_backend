@@ -32,7 +32,7 @@ import { lookUpCall } from "../utils/bookingSync";
 import { notifyCallBooked, notifyClientCallBooked } from "../utils/notifications";
 import { answersOfItems, askedItemsOf } from "../utils/onboardingUpdates";
 import { canAccessClient } from "../utils/clientAccess";
-import { emitToClient } from "../realtime/messagesRealtime";
+import { emitOnboardingChanged, emitToClient } from "../realtime/messagesRealtime";
 import { removeClientData } from "../utils/clientCleanup";
 
 // Onboarding, for someone who has no account yet. Nobody is signed in here, so these routes
@@ -381,6 +381,7 @@ export const updateMyOnboarding = asyncHandler(async (req: Request, res: Respons
 
   await client.save();
   if (isMainLogin) await login.save();
+  emitOnboardingChanged(client._id);
 
   // They've just said they booked their onboarding call ("I've booked my call"). The team hears of
   // it in their bell at once. The client's confirmation waits for the call itself: it is looked
@@ -456,6 +457,7 @@ const uploadMediaFor = (find: (req: Request) => Promise<IClient>, byTeam = false
     if (kind === "logo") client.set("onboarding.logo.has", "yes");
     else if (kind !== "logoStyle") client.set(`onboarding.media.${kind}.mode`, "upload");
     await client.save();
+    emitOnboardingChanged(client._id);
   } catch (error) {
     // Nothing half-done: what reached Spaces but couldn't be recorded is taken out again.
     await Promise.all(added.map((file) => deleteFromSpaces(file.url).catch(() => undefined)));
@@ -480,6 +482,7 @@ const removeMediaFor = (find: (req: Request) => Promise<IClient>) =>
 
   client.set(filesPathOf(kind), stored.filter((file) => file.url !== url));
   await client.save();
+  emitOnboardingChanged(client._id);
   // Off the record first: a file left behind in Spaces is tidier than a listed one that is gone.
   await deleteFromSpaces(url).catch(() => undefined);
 
@@ -548,6 +551,7 @@ export const updateClientOnboarding = asyncHandler(async (req: Request, res: Res
   if (!client) throw new ApiError(404, "Client not found");
   applyAnswers(client, { answers: req.body.answers }, true);
   await client.save();
+  emitOnboardingChanged(client._id);
   return ApiResponse(res, 200, "Onboarding updated", viewOf(client));
 });
 
@@ -586,7 +590,11 @@ const LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const newCustomKey = () => `custom${Array.from(crypto.randomBytes(8), (byte) => LETTERS[byte % LETTERS.length]).join("")}`;
 
 // The client's form hears that what it asks has changed, and loads it again.
-const tellClientForm = (clientId: unknown) => emitToClient(String(clientId), "onboarding:controls", {});
+// The team's onboarding pages too.
+const tellClientForm = (clientId: unknown) => {
+  emitToClient(String(clientId), "onboarding:controls", {});
+  emitOnboardingChanged(clientId);
+};
 
 // POST /onboarding/clients/:clientId/custom-accounts — an account of the team's own, asked on the
 // client's form like the others: on the Social media step ("Discord"), or with `section: "google"`

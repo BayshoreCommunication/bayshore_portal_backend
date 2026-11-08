@@ -68,6 +68,10 @@ export const emitToClient = (clientId: string, event: string, payload: unknown) 
   io?.to(ALL_CLIENTS_ROOM).to(clientRoom(clientId)).emit(event, payload);
 };
 
+// A client's onboarding changed — their answers, files, or the team's ticks — so an onboarding
+// page open on it loads it again.
+export const emitOnboardingChanged = (clientId: unknown) => emitToClient(String(clientId), "onboarding:changed", { client: String(clientId) });
+
 // Something for particular people, wherever they are connected — e.g. "you have a new notification".
 export const emitToUsers = (userIds: string[], event: string, payload: unknown) => {
   if (!io || userIds.length === 0) return;
