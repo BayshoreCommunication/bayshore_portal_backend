@@ -9,6 +9,9 @@ export const CLIENT_STATUSES = ["onboarding", "pending", "active", "on_hold", "c
 export type ClientStatus = (typeof CLIENT_STATUSES)[number];
 
 export const CLIENT_NOTES_MAX_LENGTH = 500;
+// More addresses of the client's own, besides the one they sign in with: everything emailed to
+// that one is copied to these too (utils/email.ts → sendEmail).
+export const CLIENT_SECONDARY_EMAILS_MAX = 10;
 
 // The pages of the client portal a client can be given or refused, each by the key of its
 // entry in the portal's menu. Settings isn't among them: a client always reaches their own
@@ -144,6 +147,12 @@ export type OnboardingCustomSection = (typeof ONBOARDING_CUSTOM_SECTIONS)[number
 export const customSectionPath = (section: OnboardingCustomSection) => `${section}Custom` as const;
 export const ONBOARDING_CUSTOM_ACCOUNT_NAME_MAX_LENGTH = 60;
 export const ONBOARDING_CUSTOM_ACCOUNTS_MAX = 20;
+// Items the team adds to one client's "Additional items" step, under a key like an account's
+// ("customQwErTyUi" — the item is "extra.<key>" to the portals). Each asks for what the team ticked.
+export const ONBOARDING_EXTRA_FIELDS = ["info", "login", "password", "link", "file"] as const;
+export type OnboardingExtraField = (typeof ONBOARDING_EXTRA_FIELDS)[number];
+export const ONBOARDING_EXTRA_TITLE_MAX_LENGTH = 100;
+export const ONBOARDING_EXTRA_ITEMS_MAX = 30;
 
 export const ONBOARDING_TEXT_MAX_LENGTH = 300;
 export const ONBOARDING_LONG_TEXT_MAX_LENGTH = 2000;
@@ -191,6 +200,20 @@ export interface IOnboardingAccount {
 // A social account the team added to the client's form, with the client's answers about it.
 export interface IOnboardingCustomAccount extends IOnboardingAccount {
   name: string;
+}
+
+// An item the team added to the client's "Additional items" step: what they called it, what the
+// client is to do, what it asks for — and the client's answers. Passwords are sealed.
+export interface IOnboardingExtraItem {
+  title: string;
+  description?: string;
+  fields: OnboardingExtraField[];
+  info?: string;
+  link?: string;
+  loginUsername?: string;
+  loginPassword?: string;
+  password?: string;
+  files: IOnboardingFile[];
 }
 
 // One kind of photos or videos.
@@ -358,6 +381,8 @@ export interface IClientOnboarding {
   socialCustom?: Map<string, IOnboardingCustomAccount>;
   // The same for Google accounts ("Google Merchant Center"), on the Google step ("google.<key>").
   googleCustom?: Map<string, IOnboardingCustomAccount>;
+  // The team's own items for this client, by key, in the order they were added ("extra.<key>").
+  extraItems?: Map<string, IOnboardingExtraItem>;
 
   media?: {
     professionalPhotos?: IOnboardingMedia;
@@ -519,6 +544,8 @@ export interface IClient extends Document {
   contactName: string;
   companyName: string;
   email: string;
+  // More addresses that get a copy of every email to `email` (CLIENT_SECONDARY_EMAILS_MAX).
+  secondaryEmails?: string[];
   phone?: string;
   address?: string;
   serviceTypes: string[];
@@ -803,6 +830,21 @@ const onboardingCustomAccountSchema = new Schema<IOnboardingCustomAccount>(
   { _id: false }
 );
 
+const onboardingExtraItemSchema = new Schema<IOnboardingExtraItem>(
+  {
+    title: { type: String, required: true, trim: true, maxlength: ONBOARDING_EXTRA_TITLE_MAX_LENGTH },
+    description: longText,
+    fields: { type: [{ type: String, enum: ONBOARDING_EXTRA_FIELDS }], default: [] },
+    info: longText,
+    link: shortText,
+    loginUsername: shortText,
+    loginPassword: { type: String },
+    password: { type: String },
+    files: { type: [onboardingFileSchema], default: [] },
+  },
+  { _id: false }
+);
+
 const onboardingMediaSchema = new Schema<IOnboardingMedia>(
   {
     mode: { type: String, enum: ONBOARDING_MEDIA_MODES },
@@ -988,6 +1030,7 @@ const onboardingSchema = new Schema<IClientOnboarding>(
 
     socialCustom: { type: Map, of: onboardingCustomAccountSchema, default: undefined },
     googleCustom: { type: Map, of: onboardingCustomAccountSchema, default: undefined },
+    extraItems: { type: Map, of: onboardingExtraItemSchema, default: undefined },
 
     media: {
       type: new Schema(
@@ -1111,6 +1154,10 @@ const clientSchema = new Schema<IClient>(
       lowercase: true,
       unique: true,
       match: [EMAIL_REGEX, "Please enter a valid email address"],
+    },
+    secondaryEmails: {
+      type: [{ type: String, trim: true, lowercase: true, match: [EMAIL_REGEX, "Please enter a valid email address"] }],
+      default: undefined,
     },
     phone: {
       type: String,

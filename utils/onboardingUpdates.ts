@@ -21,6 +21,7 @@ const STEP_PATHS: Record<string, string[]> = {
   google: ["onboarding.google", "onboarding.googleCustom"],
   social: ["onboarding.social", "onboarding.socialCustom"],
   media: ["onboarding.media"],
+  extra: ["onboarding.extraItems"],
 };
 
 // The step of the form an item is on ("social.facebook" → "social", "hosting" → "domain").
@@ -39,7 +40,10 @@ const pathsOf = (item: string) =>
       ? CONTACT_PATHS
       : /^(social|google)\.custom/.test(item)
         ? [`onboarding.${item.split(".")[0]}Custom.${item.split(".")[1]}`]
-        : [`onboarding.${item}`];
+        : // An item the team added to "Additional items" ("extra.customAbc…").
+          item.startsWith("extra.")
+          ? [`onboarding.extraItems.${item.slice("extra.".length)}`]
+          : [`onboarding.${item}`];
 
 // The answers of each item, as text, to tell afterwards whether they changed.
 export const answersOfItems = (client: IClient, items: string[]) =>

@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { Resend } from "resend";
 import { env } from "../config/env";
 
@@ -10,17 +11,40 @@ export const emailReady = Boolean(resend && env.email.from);
 // Resend is someone else's server: a slow answer mustn't hold up the request that caused it.
 const SEND_TIMEOUT_MS = 10_000;
 
-export type Email = { to: string; subject: string; html: string; text: string };
+// `primaryOnly`: for the client's own address alone — a password, or a change to how they sign in —
+// and not copied to their other addresses.
+export type Email = { to: string; subject: string; html: string; text: string; primaryOnly?: boolean };
 
-// Sends one email. Never throws — an email is a courtesy, like the notification it repeats:
-// one that can't go out is logged, and whatever caused it carries on.
-export const sendEmail = async ({ to, subject, html, text }: Email): Promise<boolean> => {
+// The other addresses of the client whose own (sign-in) address this is, to copy an email to
+// (client.model.ts → secondaryEmails). None for anyone else — the team, or a client's other logins.
+// Looked up by the model's name, not imported: the models are loaded by then, and email.ts stays
+// free of them.
+const copiesFor = async (to: string): Promise<string[]> => {
+  const address = to.trim().toLowerCase();
+  const Client = mongoose.models.Client;
+  if (!Client) return [];
+  type Copies = { secondaryEmails?: string[] } | null;
+  let client = (await Client.findOne({ email: address }).select("secondaryEmails").lean()) as Copies;
+  // Or the address of the client's main login, should it differ from the record's.
+  const User = mongoose.models.User;
+  if (!client && User) {
+    const login = (await User.findOne({ email: address, role: "client" }).select("client").lean()) as { _id: unknown; client?: unknown } | null;
+    if (login?.client) client = (await Client.findOne({ _id: login.client, user: login._id }).select("secondaryEmails").lean()) as Copies;
+  }
+  return [...new Set(client?.secondaryEmails ?? [])].filter((email) => email !== address);
+};
+
+// Sends one email — to a client, with a copy to each of their other addresses. Never throws — an
+// email is a courtesy, like the notification it repeats: one that can't go out is logged, and
+// whatever caused it carries on.
+export const sendEmail = async ({ to, subject, html, text, primaryOnly = false }: Email): Promise<boolean> => {
   if (!resend || !env.email.from) return false;
 
   let timer: NodeJS.Timeout | undefined;
   try {
+    const cc = primaryOnly ? [] : await copiesFor(to).catch(() => []);
     const { error } = await Promise.race([
-      resend.emails.send({ from: env.email.from, to, subject, html, text, ...(env.email.replyTo ? { replyTo: env.email.replyTo } : {}) }),
+      resend.emails.send({ from: env.email.from, to, ...(cc.length ? { cc } : {}), subject, html, text, ...(env.email.replyTo ? { replyTo: env.email.replyTo } : {}) }),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`no answer from Resend in ${SEND_TIMEOUT_MS / 1000}s`)), SEND_TIMEOUT_MS);
       }),

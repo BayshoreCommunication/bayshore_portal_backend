@@ -14,7 +14,7 @@ export const ONBOARDING_COMMENT_SIDES = ["client", "team"] as const;
 export type OnboardingCommentSide = (typeof ONBOARDING_COMMENT_SIDES)[number];
 
 // The steps of the onboarding form, as both portals name them.
-export const ONBOARDING_COMMENT_STEPS = ["contact", "web", "domain", "email", "logo", "google", "social", "media"] as const;
+export const ONBOARDING_COMMENT_STEPS = ["contact", "web", "domain", "email", "logo", "google", "social", "media", "extra"] as const;
 export type OnboardingCommentStep = (typeof ONBOARDING_COMMENT_STEPS)[number];
 
 export const ONBOARDING_COMMENT_MAX_LENGTH = 1000;

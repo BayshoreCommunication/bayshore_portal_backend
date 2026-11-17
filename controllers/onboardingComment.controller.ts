@@ -46,6 +46,7 @@ const STEP_TITLES: Record<string, string> = {
   google: "Google accounts",
   social: "Social media",
   media: "Photos and videos",
+  extra: "Additional items",
 };
 
 // After a comment or a reply is saved: live to everyone on the client's onboarding (and their

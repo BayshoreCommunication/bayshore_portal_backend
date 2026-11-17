@@ -78,6 +78,8 @@ export const emailClientAdded = async (client: IClient, actor: IUser, password?:
 
   const sent = await sendEmail({
     to: client.email,
+    // The password stays with the address they sign in with.
+    primaryOnly: Boolean(password),
     ...activityEmail({
       name: client.contactName,
       eyebrow: "Welcome",
@@ -133,6 +135,7 @@ export const emailPortalLogin = quietly(async (client: IClient, password: string
   const both = !created && emailChanged;
   return sendEmail({
     to: client.email,
+    primaryOnly: true,
     ...activityEmail({
       name: client.contactName,
       eyebrow: created ? "Your portal is ready" : both ? "Sign-in details changed" : "Password changed",
@@ -163,6 +166,7 @@ export const emailSignInEmailChanged = quietly(async (client: IClient) => {
   if (isOff(client, "portal_login", "email")) return false;
   return sendEmail({
     to: client.email,
+    primaryOnly: true,
     ...activityEmail({
       name: client.contactName,
       eyebrow: "Sign-in email changed",
@@ -184,6 +188,7 @@ export const emailSignInEmailMoved = quietly(async (client: IClient, oldEmail: s
   if (isOff(client, "portal_login", "email")) return false;
   return sendEmail({
     to: oldEmail,
+    primaryOnly: true,
     ...activityEmail({
       name: client.contactName,
       eyebrow: "Sign-in email changed",
@@ -281,6 +286,22 @@ export const emailProjectCreated = quietly(async (project: ProjectNews, actor: I
 
 // A new message in a client's conversation, to the other side — once while it's unread, not
 // once per message. `link` is the page the portal notification opens.
+// The same, to a client with no portal login yet: at the client's own address (sendEmail copies
+// their secondary ones), with a button to the portal for when they have one.
+export const emailNewMessageToClient = quietly(
+  async (to: { name: string; email: string }, { from, title, body, link }: { from: string; title: string; body: string; link: string }) => {
+    await emailEach([{ fullName: to.name, email: to.email }], {
+      eyebrow: "New message",
+      tone: "info",
+      title,
+      body,
+      details: [["From", from]],
+      button: { label: "Open your portal", url: clientUrl(link) },
+      audience: "client",
+    });
+  }
+);
+
 export const emailNewMessage = quietly(
   async (recipients: Id[], { side, from, title, body, link }: { side: "client" | "team"; from: string; title: string; body: string; link: string }) => {
     const people: Person[] = await User.find({ _id: { $in: recipients } }).select("fullName email").lean();

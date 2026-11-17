@@ -1,11 +1,11 @@
 import type mongoose from "mongoose";
 import { Client } from "../models/client.model";
 import type { IContent, IContentFile } from "../models/content.model";
-import { Message, MESSAGE_TEXT_MAX_LENGTH, type IMessage, type IMessageMeeting, type MessageKind, type MessageSide } from "../models/message.model";
+import { Message, MessageRead, MESSAGE_TEXT_MAX_LENGTH, type IMessage, type IMessageMeeting, type MessageKind, type MessageSide } from "../models/message.model";
 import { Notification, NOTIFICATION_BODY_MAX_LENGTH, NOTIFICATION_TITLE_MAX_LENGTH } from "../models/notification.model";
 import { User, type IUser } from "../models/user.model";
 import { emitNewMessage, emitToUsers } from "../realtime/messagesRealtime";
-import { emailNewMessage } from "./activityEmails";
+import { emailNewMessage, emailNewMessageToClient } from "./activityEmails";
 import { isOff } from "./clientMessages";
 
 // Putting a message into a client's conversation: saving it, sending it live to whoever has
@@ -24,11 +24,18 @@ export const sideOf = (user: Pick<IUser, "role">): MessageSide => (user.role ===
 // it — account manager, team, whoever added it — when the client does. Never the writer.
 // `bell` and `email`: whether it may go each way — to a client, as the team switched it for them.
 const otherSideOf = async (clientId: Id, side: MessageSide, except: Id) => {
-  const client = await Client.findById(clientId).select("companyName accountManager team createdBy messagesOff").lean();
+  const client = await Client.findById(clientId).select("companyName contactName email accountManager team createdBy messagesOff").lean();
   const company = client?.companyName ?? "A client";
   if (side === "team") {
     const recipients: Id[] = await User.find({ role: "client", client: clientId, status: "active", _id: { $ne: except } }).distinct("_id");
-    return { recipients, company, bell: !isOff(client, "message", "bell"), email: !isOff(client, "message", "email") };
+    return {
+      recipients,
+      company,
+      bell: !isOff(client, "message", "bell"),
+      email: !isOff(client, "message", "email"),
+      // No login yet: the email goes to the client's own address (and their secondary ones) instead.
+      address: client?.email ? { name: client.contactName, email: client.email } : undefined,
+    };
   }
   const ids = [client?.accountManager, ...(client?.team ?? []), client?.createdBy].filter((id): id is Id => Boolean(id));
   const recipients: Id[] = await User.find({ _id: { $in: ids, $ne: except }, status: "active", role: { $ne: "client" } }).distinct("_id");
@@ -48,7 +55,10 @@ const notifyOtherSide = async (message: IMessage, actor: IUser, emailChoice?: bo
     const sides = await otherSideOf(message.client, message.side, actor._id);
     const { recipients, company, bell } = sides;
     const email = sides.email && emailChoice !== false;
-    if (recipients.length === 0 || (!bell && !email)) return;
+    // No login to tell: the team's "Also send by email" still reaches the client — at their own
+    // address — and their bell catches up when they first sign in (catchUpMessages).
+    const noLogin = message.side === "team" && recipients.length === 0;
+    if ((recipients.length === 0 && !noLogin) || (!bell && !email)) return;
 
     const from = message.side === "team" ? "BayShore" : company;
     const body =
@@ -107,6 +117,13 @@ const notifyOtherSide = async (message: IMessage, actor: IUser, emailChoice?: bo
         }
       })
     );
+    if (noLogin) {
+      if (email && emailChoice && "address" in sides && sides.address) {
+        const title = clip(`${from} sent you a message`, NOTIFICATION_TITLE_MAX_LENGTH);
+        await emailNewMessageToClient(sides.address, { from: actor.fullName, title, body: clip(body, 280), link });
+      }
+      return;
+    }
     const emailTo = emailChoice ? recipients : fresh;
     if (!firstTitle) firstTitle = clip(`${from} sent ${message.side === "team" ? "you " : ""}a message`, NOTIFICATION_TITLE_MAX_LENGTH);
     if (emailTo.length && email) await emailNewMessage(emailTo, { side: message.side, from: message.side === "team" ? actor.fullName : company, title: firstTitle, body: clip(body, 280), link });
@@ -114,6 +131,51 @@ const notifyOtherSide = async (message: IMessage, actor: IUser, emailChoice?: bo
     if (bell) emitToUsers(recipients.map(String), "notifications:new", { type: "message", client: String(message.client) });
   } catch (error) {
     console.error("Message notification failed:", error);
+  }
+};
+
+// A client signing in hears of the team's messages they never got a notification for: sent
+// before they had a login, or while it was switched off. One "new messages" notification for
+// those since they last read the conversation (or its notification) — none when one is still
+// unread (it covers them), or when the team turned the client's message bell off. Never fails
+// the sign-in.
+export const catchUpMessages = async (user: Pick<IUser, "_id" | "role" | "client">) => {
+  try {
+    if (user.role !== "client" || !user.client) return;
+    const clientId = user.client as Id;
+    const client = await Client.findById(clientId).select("messagesOff").lean();
+    if (!client || isOff(client, "message", "bell")) return;
+    if (await Notification.exists({ recipient: user._id, type: "message", client: clientId, readAt: null })) return;
+    const [read, lastNotice] = await Promise.all([
+      MessageRead.findOne({ user: user._id, client: clientId }).lean(),
+      Notification.findOne({ recipient: user._id, type: "message", client: clientId }).sort({ readAt: -1 }).select("readAt").lean(),
+    ]);
+    const since = [read?.readAt, lastNotice?.readAt].filter((date): date is Date => Boolean(date)).sort((a, b) => b.getTime() - a.getTime())[0];
+    const missed = await Message.find({ client: clientId, side: "team", kind: { $in: ["text", "meeting"] }, ...(since ? { createdAt: { $gt: since } } : {}) })
+      .sort({ createdAt: -1 })
+      .select("text attachments kind meeting senderName sender")
+      .lean();
+    if (!missed.length) return;
+    const latest = missed[0];
+    const body =
+      latest.kind === "meeting" && latest.meeting
+        ? `${latest.meeting.title} — ${whenOf(latest.meeting)}`
+        : latest.text?.trim()
+          ? `“${latest.text.trim()}”`
+          : `${latest.attachments.length} ${latest.attachments.length === 1 ? "file" : "files"} attached`;
+    await Notification.create({
+      recipient: user._id,
+      type: "message",
+      client: clientId,
+      title: clip(missed.length === 1 ? "BayShore sent you a message" : `BayShore sent you ${missed.length} messages`, NOTIFICATION_TITLE_MAX_LENGTH),
+      body: clip(body, NOTIFICATION_BODY_MAX_LENGTH),
+      link: "/messages",
+      actor: latest.sender,
+      actorName: latest.senderName,
+      pieces: missed.length,
+    });
+  } catch (error) {
+    console.error("Catching up message notifications failed:", error);
   }
 };
 
@@ -135,11 +197,11 @@ export const postMessage = async (
     email?: boolean;
   }
 ) => {
-  // Whether it will reach them by email: chosen, the client's message emails on, and someone to send to.
+  // Whether it will reach them by email: chosen, and the client's message emails on — to their logins,
+  // or to the client's own address while they have none.
   const emailed =
     input.email && sideOf(actor) === "team"
-      ? (await Client.exists({ _id: input.client, messagesOff: { $ne: "message.email" } })) !== null &&
-        (await User.exists({ role: "client", client: input.client, status: "active" })) !== null
+      ? (await Client.exists({ _id: input.client, messagesOff: { $ne: "message.email" } })) !== null
       : undefined;
   const message = await Message.create({
     client: input.client,

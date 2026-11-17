@@ -1,11 +1,13 @@
 import crypto from "crypto";
 import type { Request, Response } from "express";
-import type { FilterQuery } from "mongoose";
+import type { Document, FilterQuery } from "mongoose";
 import {
   Client,
   ONBOARDING_CUSTOM_ACCOUNT_KEY,
   ONBOARDING_CUSTOM_ACCOUNTS_MAX,
   ONBOARDING_CUSTOM_SECTIONS,
+  ONBOARDING_EXTRA_FIELDS,
+  ONBOARDING_EXTRA_ITEMS_MAX,
   customSectionPath,
   type OnboardingCustomSection,
   ONBOARDING_MEDIA_KINDS,
@@ -15,12 +17,14 @@ import {
   ONBOARDING_STATUSES,
   type IClient,
   type IOnboardingCustomAccount,
+  type IOnboardingExtraItem,
   type IOnboardingFile,
   type OnboardingMediaKind,
   type OnboardingUploadKind,
   type OnboardingStatus,
 } from "../models/client.model";
 import { User } from "../models/user.model";
+import { MEDIA_MAX_FILE_SIZE, mediaOfMimeType } from "../models/content.model";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { ApiResponse } from "../utils/ApiResponse";
 import { ApiError } from "../utils/ApiError";
@@ -129,6 +133,18 @@ const withoutPasswords = (client: IClient) => {
     delete platform.loginPassword;
     platform.loginPasswordSet = true;
   }
+  // The team's own items: a login's password, and a password asked on its own.
+  const extras: unknown = onboarding.extraItems;
+  if (isPlainObject(extras)) {
+    for (const item of Object.values(extras)) {
+      if (!isPlainObject(item)) continue;
+      for (const field of ["loginPassword", "password"] as const) {
+        if (!item[field]) continue;
+        delete item[field];
+        item[`${field}Set`] = true;
+      }
+    }
+  }
   return onboarding;
 };
 
@@ -190,6 +206,38 @@ const applyCustomAnswers = (client: IClient, section: OnboardingCustomSection, i
   }
 };
 
+// The answers to the items the team added ("Additional items", `answers.extraItems`, by key). Only
+// the items on the record are answered; their title, description and what they ask stay the
+// team's, and their files come in through their own route. A password is sealed when typed and
+// kept when nothing new is sent.
+const EXTRA_ANSWER_FIELDS = ["info", "link", "loginUsername"] as const;
+const sealedOrKept = (typed: unknown, kept: string | undefined) => {
+  if (typeof typed === "string" && typed !== "") {
+    if (typed.length > PASSWORD_MAX_LENGTH) throw new ApiError(422, `A password cannot exceed ${PASSWORD_MAX_LENGTH} characters`);
+    return seal(typed);
+  }
+  return kept || undefined;
+};
+const applyExtraAnswers = (client: IClient, incoming: unknown) => {
+  const items = client.onboarding?.extraItems;
+  if (!isPlainObject(incoming) || !items) return;
+  for (const [key, answer] of Object.entries(incoming)) {
+    const stored = items.get(key);
+    if (!stored || !isPlainObject(answer)) continue;
+    const picked: Plain = Object.fromEntries(
+      EXTRA_ANSWER_FIELDS.filter((field) => typeof answer[field] === "string" && (answer[field] as string).trim()).map((field) => [field, (answer[field] as string).trim()])
+    );
+    const loginPassword = sealedOrKept(answer.loginPassword, stored.loginPassword);
+    const password = sealedOrKept(answer.password, stored.password);
+    // Only the answers, each on its own path: the item's files are saved by their own requests
+    // (uploadExtraFor), and an upload finishing meanwhile must not be put back as it was.
+    const entry = stored as unknown as Document;
+    for (const field of EXTRA_ANSWER_FIELDS) entry.set(field, picked[field]);
+    entry.set("loginPassword", loginPassword);
+    entry.set("password", password);
+  }
+};
+
 // Puts the sections that were sent (under `answers`) onto the record. A section replaces what
 // was there for it; one left out is untouched. Only the form's own sections are read — a
 // visitor can't reach the rest of the client record (its status, its team) through here.
@@ -227,6 +275,7 @@ const applyAnswers = (client: IClient, body: Plain, byTeam = false) => {
     );
   }
   for (const section of ONBOARDING_CUSTOM_SECTIONS) applyCustomAnswers(client, section, answers[customSectionPath(section)]);
+  applyExtraAnswers(client, answers.extraItems);
   if (byTeam) return;
   // `submit: true` hands it in; `submit: false` takes it back to keep working on it.
   if (body.submit === true) {
@@ -558,13 +607,29 @@ export const updateClientOnboarding = asyncHandler(async (req: Request, res: Res
 // Where a login the client shared is kept: a platform (domain, hosting, cms) or an account
 // (google.ads, social.instagram…).
 const LOGIN_PATH = /^(domain|hosting|cms|google\.[a-zA-Z]+|social\.[a-zA-Z]+)$/;
+// An item the team added: its login's password ("extra.<key>"), or the password it asks on its own
+// ("extra.<key>.password").
+const EXTRA_LOGIN_PATH = /^extra\.(custom[A-Za-z]{8})(\.password)?$/;
 
 // GET /onboarding/clients/:clientId/password?login=hosting — one password the client shared, opened
 // for the team member who asks (only on demand: the client's record never carries it readable).
 export const revealClientOnboardingPassword = asyncHandler(async (req: Request, res: Response) => {
   const login = String(req.query.login ?? "");
-  if (!LOGIN_PATH.test(login)) throw new ApiError(422, "Unknown login");
+  const extra = EXTRA_LOGIN_PATH.exec(login);
+  if (!LOGIN_PATH.test(login) && !extra) throw new ApiError(422, "Unknown login");
   if (!(await canAccessClient(req.user!, req.params.clientId))) throw new ApiError(404, "Client not found");
+  if (extra) {
+    const found = await Client.findById(req.params.clientId).select("onboarding.extraItems");
+    if (!found) throw new ApiError(404, "Client not found");
+    const item = found.onboarding?.extraItems?.get(extra[1]);
+    const sealedExtra = extra[2] ? item?.password : item?.loginPassword;
+    if (!sealedExtra) throw new ApiError(404, "No password saved for this login");
+    try {
+      return ApiResponse(res, 200, "Password", { password: unseal(sealedExtra) });
+    } catch {
+      throw new ApiError(410, "This password can't be read any more — ask the client for it again");
+    }
+  }
   // An account the team added is kept apart from the others of its kind ("social.customAbc…" in
   // onboarding.socialCustom, "google.customAbc…" in onboarding.googleCustom).
   const [section, key = ""] = login.split(".");
@@ -636,3 +701,132 @@ export const removeClientCustomAccount = asyncHandler(async (req: Request, res: 
   tellClientForm(client._id);
   return ApiResponse(res, 200, "Account taken off the form");
 });
+
+// ── Items the team adds ("Additional items") ─────────────────────────────────
+
+// An item as it goes back to the team: its key, and what it is.
+const extraViewOf = (key: string, item: IOnboardingExtraItem) => ({ key, title: item.title, description: item.description ?? "", fields: [...item.fields] });
+
+// The fields asked, once each, in the form's own order.
+const fieldsFrom = (sent: unknown): IOnboardingExtraItem["fields"] =>
+  Array.isArray(sent) ? ONBOARDING_EXTRA_FIELDS.filter((field) => sent.includes(field)) : [];
+
+// POST /onboarding/clients/:clientId/extra-items — an item of the team's own on the client's
+// "Additional items" step: a title, what the client is to do, and what it asks for.
+export const addClientExtraItem = asyncHandler(async (req: Request, res: Response) => {
+  const client = await findStaffClient(req);
+  const items = client.onboarding?.extraItems;
+  if (items && items.size >= ONBOARDING_EXTRA_ITEMS_MAX) throw new ApiError(409, `A client can have up to ${ONBOARDING_EXTRA_ITEMS_MAX} items of the team's own`);
+  const item = { title: String(req.body.title).trim(), description: String(req.body.description ?? "").trim() || undefined, fields: fieldsFrom(req.body.fields), files: [] } as IOnboardingExtraItem;
+  const key = newCustomKey();
+  if (!client.onboarding) client.set("onboarding", {});
+  if (!client.onboarding?.extraItems) client.set("onboarding.extraItems", {});
+  client.onboarding!.extraItems!.set(key, item);
+  await client.save();
+  tellClientForm(client._id);
+  return ApiResponse(res, 201, `${item.title} added`, extraViewOf(key, item));
+});
+
+// PATCH /onboarding/clients/:clientId/extra-items/:key — its title, description or what it asks
+// for changed. The client's answers stay.
+export const updateClientExtraItem = asyncHandler(async (req: Request, res: Response) => {
+  const client = await findStaffClient(req);
+  const key = req.params.key;
+  const stored = client.onboarding?.extraItems?.get(key);
+  if (!stored) throw new ApiError(404, "There is no such item on this client's form");
+  const plain = (client.toObject({ flattenMaps: true }).onboarding?.extraItems as unknown as Record<string, IOnboardingExtraItem>)[key];
+  const next = {
+    ...plain,
+    ...(req.body.title !== undefined ? { title: String(req.body.title).trim() } : {}),
+    ...(req.body.description !== undefined ? { description: String(req.body.description).trim() || undefined } : {}),
+    ...(req.body.fields !== undefined ? { fields: fieldsFrom(req.body.fields) } : {}),
+  } as IOnboardingExtraItem;
+  client.onboarding!.extraItems!.set(key, next);
+  await client.save();
+  tellClientForm(client._id);
+  return ApiResponse(res, 200, `${next.title} saved`, extraViewOf(key, next));
+});
+
+// DELETE /onboarding/clients/:clientId/extra-items/:key — taken off the form with its answers and
+// files, and out of the team's ticks and asks.
+export const removeClientExtraItem = asyncHandler(async (req: Request, res: Response) => {
+  const client = await findStaffClient(req);
+  const key = req.params.key;
+  const stored = client.onboarding?.extraItems?.get(key);
+  if (!stored) throw new ApiError(404, "There is no such item on this client's form");
+  const urls = (stored.files ?? []).map((file) => file.url);
+  client.onboarding!.extraItems!.delete(key);
+  const id = `extra.${key}`;
+  for (const list of ["notNeeded", "approved", "updateAsked"] as const) {
+    const ids: string[] | undefined = client.get(`onboarding.${list}`);
+    if (ids?.includes(id)) client.set(`onboarding.${list}`, ids.filter((entry) => entry !== id));
+  }
+  await client.save();
+  tellClientForm(client._id);
+  await Promise.all(urls.map((url) => deleteFromSpaces(url).catch(() => undefined)));
+  return ApiResponse(res, 200, "Item taken off the form");
+});
+
+// The files of one of those items, as plain objects.
+const extraFilesOf = (client: IClient, key: string): IOnboardingFile[] => {
+  const item = client.onboarding?.extraItems?.get(key);
+  return item ? JSON.parse(JSON.stringify(item.files ?? [])) : [];
+};
+// Only the files' own path: answers saved while an upload was on its way stay as they are.
+const setExtraFiles = (client: IClient, key: string, files: IOnboardingFile[]) => {
+  (client.onboarding!.extraItems!.get(key) as unknown as Document).set("files", files);
+};
+
+// POST …/extra-items/:key/files — files for an item, from the client or the team for them:
+// images, videos or documents, each up to its own size.
+const uploadExtraFor = (find: (req: Request) => Promise<IClient>, byTeam = false) =>
+  asyncHandler(async (req: Request, res: Response) => {
+    const client = await find(req);
+    const key = req.params.key;
+    if (!client.onboarding?.extraItems?.has(key)) throw new ApiError(404, "There is no such item on this form");
+    const incoming = uploadedFilesOf(req);
+    if (!incoming.length) throw new ApiError(422, "Choose at least one file to upload");
+    for (const file of incoming) {
+      const media = mediaOfMimeType(file.mimetype);
+      if (!media) throw new ApiError(422, `${file.originalname} can't go here — images, videos or documents only`);
+      if (file.size > MEDIA_MAX_FILE_SIZE[media]) throw new ApiError(422, `${file.originalname} is too large — up to ${MEDIA_MAX_FILE_SIZE[media] / (1024 * 1024)}MB`);
+    }
+    const stored = extraFilesOf(client, key);
+    if (stored.length + incoming.length > ONBOARDING_MEDIA_MAX_FILES) {
+      throw new ApiError(422, `That is too many — up to ${ONBOARDING_MEDIA_MAX_FILES} files here, and ${stored.length} are already uploaded`);
+    }
+    const added: IOnboardingFile[] = [];
+    try {
+      for (const file of incoming) {
+        const url = await uploadToSpaces(file, `onboarding/${client._id}`);
+        added.push({ url, name: file.originalname, size: file.size, mimeType: file.mimetype });
+      }
+      if (!byTeam && !client.get("onboarding.status")) client.set("onboarding.status", "in_progress");
+      setExtraFiles(client, key, [...stored, ...added]);
+      await client.save();
+      emitOnboardingChanged(client._id);
+    } catch (error) {
+      await Promise.all(added.map((file) => deleteFromSpaces(file.url).catch(() => undefined)));
+      throw error;
+    }
+    return ApiResponse(res, 201, incoming.length === 1 ? "File uploaded" : "Files uploaded", { files: extraFilesOf(client, key) });
+  });
+export const uploadMyExtraFiles = uploadExtraFor(findMine);
+export const uploadClientExtraFiles = uploadExtraFor(findStaffClient, true);
+
+// DELETE …/extra-items/:key/files — one file taken off. Its URL comes in the body.
+const removeExtraFor = (find: (req: Request) => Promise<IClient>) =>
+  asyncHandler(async (req: Request, res: Response) => {
+    const client = await find(req);
+    const key = req.params.key;
+    const url = String(req.body.url);
+    const stored = extraFilesOf(client, key);
+    if (!stored.some((file) => file.url === url)) throw new ApiError(404, "File not found");
+    setExtraFiles(client, key, stored.filter((file) => file.url !== url));
+    await client.save();
+    emitOnboardingChanged(client._id);
+    await deleteFromSpaces(url).catch(() => undefined);
+    return ApiResponse(res, 200, "File removed", { files: extraFilesOf(client, key) });
+  });
+export const removeMyExtraFile = removeExtraFor(findMine);
+export const removeClientExtraFile = removeExtraFor(findStaffClient);

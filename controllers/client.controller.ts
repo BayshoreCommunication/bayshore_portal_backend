@@ -1,6 +1,6 @@
 import mongoose, { type FilterQuery } from "mongoose";
 import type { Request, Response } from "express";
-import { Client, CLIENT_PORTAL_MENUS, CLIENT_STATUSES, portalMenusOf, ONBOARDING_MAX_COMPETITORS, ONBOARDING_TEXT_MAX_LENGTH, type IClient, type ClientStatus } from "../models/client.model";
+import { Client, CLIENT_PORTAL_MENUS, CLIENT_SECONDARY_EMAILS_MAX, CLIENT_STATUSES, portalMenusOf, ONBOARDING_MAX_COMPETITORS, ONBOARDING_TEXT_MAX_LENGTH, type IClient, type ClientStatus } from "../models/client.model";
 import { User, type IUser, type UserStatus } from "../models/user.model";
 import { RefreshToken } from "../models/refreshToken.model";
 import { asyncHandler } from "../middleware/asyncHandler";
@@ -182,6 +182,7 @@ export const createClient = asyncHandler(async (req: Request, res: Response) => 
     contactName,
     companyName,
     email,
+    secondaryEmails: secondaryEmailsFrom(req.body.secondaryEmails, email),
     phone: phone || undefined,
     address,
     serviceTypes: cleanServiceTypes(serviceTypes),
@@ -238,6 +239,54 @@ export const createClient = asyncHandler(async (req: Request, res: Response) => 
 export const getMyPortal = asyncHandler(async (req: Request, res: Response) => {
   const client = req.user?.client ? await Client.findById(req.user.client).select("portalMenus createdBy") : null;
   return ApiResponse(res, 200, "Portal fetched successfully", { menus: client ? portalMenusOf(client) : [...CLIENT_PORTAL_MENUS] });
+});
+
+// The client's other addresses, as the team's form sends them: each once, in lower case, and
+// never the primary one (which gets every email anyway).
+const secondaryEmailsFrom = (sent: unknown, primary: string): string[] => {
+  const emails = [...new Set((Array.isArray(sent) ? sent : []).map((email) => String(email).trim().toLowerCase()).filter(Boolean))].filter((email) => email !== primary);
+  if (emails.length > CLIENT_SECONDARY_EMAILS_MAX) throw new ApiError(422, `A client can have up to ${CLIENT_SECONDARY_EMAILS_MAX} secondary emails`);
+  return emails;
+};
+
+// ── The signed-in client's email addresses ───────────────────────────────────
+
+// The one they sign in with (primary), and their others — each emailed a copy of everything
+// sent to the primary one (utils/email.ts → sendEmail).
+const emailsOf = (client: Pick<IClient, "email" | "secondaryEmails">) => ({ primary: client.email, secondary: client.secondaryEmails ?? [] });
+const myClient = async (req: Request) => {
+  const client = req.user?.client ? await Client.findById(req.user.client) : null;
+  if (!client) throw new ApiError(404, "There is no client record for this account");
+  return client;
+};
+
+// GET /clients/me/emails
+export const getMyEmails = asyncHandler(async (req: Request, res: Response) => {
+  return ApiResponse(res, 200, "Emails fetched successfully", emailsOf(await myClient(req)));
+});
+
+// POST /clients/me/emails — one more address, to get a copy of every email.
+export const addMyEmail = asyncHandler(async (req: Request, res: Response) => {
+  const client = await myClient(req);
+  const email = String(req.body.email).trim().toLowerCase();
+  const secondary = client.secondaryEmails ?? [];
+  if (email === client.email) throw new ApiError(409, "This is already your primary email");
+  if (secondary.includes(email)) throw new ApiError(409, "This email is already added");
+  if (secondary.length >= CLIENT_SECONDARY_EMAILS_MAX) throw new ApiError(409, `You can add up to ${CLIENT_SECONDARY_EMAILS_MAX} secondary emails`);
+  client.secondaryEmails = [...secondary, email];
+  await client.save();
+  return ApiResponse(res, 201, "Email added", emailsOf(client));
+});
+
+// DELETE /clients/me/emails — one of those taken off. The primary one can't be.
+export const removeMyEmail = asyncHandler(async (req: Request, res: Response) => {
+  const client = await myClient(req);
+  const email = String(req.body.email).trim().toLowerCase();
+  const secondary = client.secondaryEmails ?? [];
+  if (!secondary.includes(email)) throw new ApiError(404, "This email isn't one of your secondary emails");
+  client.secondaryEmails = secondary.filter((entry) => entry !== email);
+  await client.save();
+  return ApiResponse(res, 200, "Email removed", emailsOf(client));
 });
 
 export const listClients = asyncHandler(async (req: Request, res: Response) => {
@@ -366,6 +415,8 @@ export const updateClient = asyncHandler(async (req: Request, res: Response) => 
   if (contactName !== undefined) client.contactName = contactName;
   if (companyName !== undefined) client.companyName = companyName;
   if (email !== undefined) client.email = email;
+  // The list as the form holds it; and a new primary email is no longer one of the others.
+  if (req.body.secondaryEmails !== undefined || emailChanged) client.secondaryEmails = secondaryEmailsFrom(req.body.secondaryEmails ?? client.secondaryEmails, client.email);
   if (phone !== undefined) client.phone = phone || undefined;
   if (address !== undefined) client.address = address;
   if (serviceTypes !== undefined) client.serviceTypes = cleanServiceTypes(serviceTypes);

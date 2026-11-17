@@ -5,6 +5,9 @@ import {
   getClient,
   getClientPortalPassword,
   getMyPortal,
+  getMyEmails,
+  addMyEmail,
+  removeMyEmail,
   updateClient,
   updateClientMessages,
   deleteClient,
@@ -15,6 +18,7 @@ import { USER_ROLES, type UserRole } from "../models/user.model";
 import {
   clientIdRule,
   clientMessagesRules,
+  myEmailRules,
   createClientRules,
   updateClientRules,
   listClientsRules,
@@ -337,6 +341,61 @@ router.get("/", protect, authorize(...STAFF_ROLES), listClientsRules, validate, 
  */
 // Before "/:id", which is for the team.
 router.get("/me/portal", protect, authorize("client"), getMyPortal);
+/**
+ * @swagger
+ * /clients/me/emails:
+ *   get:
+ *     summary: The signed-in client's email addresses
+ *     description: For a client. `primary` is the one they sign in with; every email sent to it is copied to each of `secondary`.
+ *     tags: [Clients]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: "{ primary, secondary }"
+ *   post:
+ *     summary: Add a secondary email
+ *     description: For a client. The address gets a copy of every email sent to their primary one — except passwords and changes to how they sign in. Up to 10.
+ *     tags: [Clients]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email]
+ *             properties:
+ *               email: { type: string, format: email }
+ *     responses:
+ *       201:
+ *         description: "{ primary, secondary }"
+ *       409:
+ *         description: Already added, the primary email, or too many
+ *   delete:
+ *     summary: Remove a secondary email
+ *     tags: [Clients]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email]
+ *             properties:
+ *               email: { type: string, format: email }
+ *     responses:
+ *       200:
+ *         description: "{ primary, secondary }"
+ *       404:
+ *         description: Not one of their secondary emails
+ */
+router.get("/me/emails", protect, authorize("client"), getMyEmails);
+router.post("/me/emails", protect, authorize("client"), myEmailRules, validate, addMyEmail);
+router.delete("/me/emails", protect, authorize("client"), myEmailRules, validate, removeMyEmail);
 
 router.get("/:id", protect, authorize(...STAFF_ROLES), clientIdRule, validate, getClient);
 /**

@@ -9,6 +9,13 @@ import {
   updateClientOnboarding,
   addClientCustomAccount,
   removeClientCustomAccount,
+  addClientExtraItem,
+  updateClientExtraItem,
+  removeClientExtraItem,
+  uploadMyExtraFiles,
+  uploadClientExtraFiles,
+  removeMyExtraFile,
+  removeClientExtraFile,
   revealClientOnboardingPassword,
   uploadClientOnboardingMedia,
   removeClientOnboardingMedia,
@@ -20,13 +27,17 @@ import {
 import { bookMyCall, getMyBooking } from "../controllers/booking.controller";
 import { body } from "express-validator";
 import { addMyOnboardingComment, addOnboardingComment, listMyOnboardingComments, listOnboardingComments, replyToOnboardingComment } from "../controllers/onboardingComment.controller";
-import { commentUpload, onboardingMediaUpload } from "../middleware/upload";
+import { commentUpload, onboardingExtraUpload, onboardingMediaUpload } from "../middleware/upload";
 import { protect, authorize } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import { USER_ROLES, type UserRole } from "../models/user.model";
 import {
   addCustomAccountRules,
   removeCustomAccountRules,
+  addExtraItemRules,
+  updateExtraItemRules,
+  removeExtraItemRules,
+  extraItemFileRules,
   addOnboardingCommentRules,
   answerRules,
   listOnboardingRequestsRules,
@@ -352,6 +363,31 @@ router.delete("/me/media/:kind", protect, authorize("client"), onboardingMediaKi
  *       409:
  *         description: That time is no longer free, or online booking isn't open
  */
+/**
+ * @swagger
+ * /onboarding/me/extra-items/{key}/files:
+ *   post:
+ *     summary: Upload files for an item the team added to the signed-in client's form ("Additional items")
+ *     description: A multipart form with the files under `files` (up to 10 at a time) — images, videos or documents.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       201:
+ *         description: The files now stored for the item
+ *   delete:
+ *     summary: Remove one of those files
+ *     description: Send the file's `url` in the body.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: The files left for the item
+ */
+router.post("/me/extra-items/:key/files", protect, authorize("client"), extraItemFileRules, validate, onboardingExtraUpload, uploadMyExtraFiles);
+router.delete("/me/extra-items/:key/files", protect, authorize("client"), extraItemFileRules, removeOnboardingMediaRules, validate, removeMyExtraFile);
+
 router.get("/me/booking", protect, authorize("client"), getMyBooking);
 router.post("/me/booking", protect, authorize("client"), [body("start").isISO8601().withMessage("Pick a time")], validate, bookMyCall);
 router.get("/me/comments", protect, authorize("client"), listMyOnboardingComments);
@@ -440,6 +476,80 @@ router.patch("/clients/:clientId", protect, authorize(...CAN_MANAGE), onboarding
  */
 router.post("/clients/:clientId/custom-accounts", protect, authorize(...CAN_MANAGE), addCustomAccountRules, validate, addClientCustomAccount);
 router.delete("/clients/:clientId/custom-accounts/:key", protect, authorize(...CAN_MANAGE), removeCustomAccountRules, validate, removeClientCustomAccount);
+
+/**
+ * @swagger
+ * /onboarding/clients/{clientId}/extra-items:
+ *   post:
+ *     summary: Staff — add an item of the team's own to a client's "Additional items" step
+ *     description: "`title` is what the client sees; `description` says what they are to do; `fields` is what it asks for — any of info, login, password, link, file. It is the item `extra.<key>` for the team's ticks and comments. The client's form hears of it at once."
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       201:
+ *         description: The item's key, title, description and fields
+ *       409:
+ *         description: Too many items
+ * /onboarding/clients/{clientId}/extra-items/{key}:
+ *   patch:
+ *     summary: Staff — change an item's title, description or fields
+ *     description: The client's answers stay.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: The item
+ *   delete:
+ *     summary: Staff — take an item off the client's form
+ *     description: Its answers and files go with it, and it leaves the team's ticks and asks.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Taken off
+ * /onboarding/clients/{clientId}/extra-items/{key}/files:
+ *   post:
+ *     summary: Staff (managers) — upload files for one of those items
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       201:
+ *         description: The files now stored for the item
+ *   delete:
+ *     summary: Staff (managers) — remove one of its files
+ *     description: Send the file's `url` in the body.
+ *     tags: [Onboarding]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: The files left for the item
+ */
+router.post("/clients/:clientId/extra-items", protect, authorize(...CAN_MANAGE), addExtraItemRules, validate, addClientExtraItem);
+router.patch("/clients/:clientId/extra-items/:key", protect, authorize(...CAN_MANAGE), updateExtraItemRules, validate, updateClientExtraItem);
+router.delete("/clients/:clientId/extra-items/:key", protect, authorize(...CAN_MANAGE), removeExtraItemRules, validate, removeClientExtraItem);
+router.post(
+  "/clients/:clientId/extra-items/:key/files",
+  protect,
+  authorize(...CAN_MANAGE),
+  removeExtraItemRules,
+  validate,
+  onboardingExtraUpload,
+  uploadClientExtraFiles
+);
+router.delete(
+  "/clients/:clientId/extra-items/:key/files",
+  protect,
+  authorize(...CAN_MANAGE),
+  removeExtraItemRules,
+  removeOnboardingMediaRules,
+  validate,
+  removeClientExtraFile
+);
 
 /**
  * @swagger

@@ -1,5 +1,5 @@
 import { body, param, query, type ValidationChain } from "express-validator";
-import { CLIENT_MESSAGE_SWITCHES, CLIENT_NOTES_MAX_LENGTH, CLIENT_PORTAL_MENUS, CLIENT_STATUSES, ONBOARDING_CONTROL_ID_MAX_LENGTH, ONBOARDING_CONTROL_MAX_IDS } from "../models/client.model";
+import { CLIENT_MESSAGE_SWITCHES, CLIENT_NOTES_MAX_LENGTH, CLIENT_SECONDARY_EMAILS_MAX, CLIENT_PORTAL_MENUS, CLIENT_STATUSES, ONBOARDING_CONTROL_ID_MAX_LENGTH, ONBOARDING_CONTROL_MAX_IDS } from "../models/client.model";
 import { PHONE_REGEX } from "../models/user.model";
 import { normalizePhone } from "../utils/phone";
 
@@ -16,6 +16,9 @@ export const clientMessagesRules: ValidationChain[] = [
 
 // Shared by create (required) and update (optional).
 const optionalFields: ValidationChain[] = [
+  // More addresses of the client's, each copied on every email to the primary one.
+  body("secondaryEmails").optional().isArray({ max: CLIENT_SECONDARY_EMAILS_MAX }).withMessage(`Up to ${CLIENT_SECONDARY_EMAILS_MAX} secondary emails`),
+  body("secondaryEmails.*").isString().trim().toLowerCase().isEmail().withMessage("Each secondary email must be a valid email address").isLength({ max: 254 }),
   body("serviceTypes.*")
     .isString()
     .trim()
@@ -110,4 +113,9 @@ export const listClientsRules: ValidationChain[] = [
     .withMessage(`Status must be one of: ${CLIENT_STATUSES.join(", ")}`),
   query("page").optional().isInt({ min: 1 }).toInt(),
   query("limit").optional().isInt({ min: 1, max: 100 }).toInt(),
+];
+
+// A secondary email of the signed-in client's own, added or taken off.
+export const myEmailRules: ValidationChain[] = [
+  body("email").isString().withMessage("Email is required").trim().toLowerCase().isEmail().withMessage("Please enter a valid email address").isLength({ max: 254 }),
 ];

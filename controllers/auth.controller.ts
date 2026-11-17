@@ -18,6 +18,7 @@ import { CLIENT_NOT_ALLOWED_MESSAGE, clientMaySignIn } from "../utils/clientLogi
 import { logAudit } from "../utils/audit";
 import { emailOnboardingWelcome } from "../utils/onboardingEmails";
 import { notifyClientSignedUp } from "../utils/notifications";
+import { catchUpMessages } from "../utils/messages";
 
 const failedLogin = (identifier: string, reason: string, user?: IUser) =>
   logAudit({
@@ -114,6 +115,8 @@ export const clientSignin = asyncHandler(async (req: Request, res: Response) => 
 
   const tokens = await issueAuthTokens(user);
   await logSignin(user, "client");
+  // The team's messages from before they could sign in (or while the login was off): in the bell now.
+  await catchUpMessages(user);
 
   return ApiResponse(res, 200, "Client signin successful", { user, ...tokens });
 });

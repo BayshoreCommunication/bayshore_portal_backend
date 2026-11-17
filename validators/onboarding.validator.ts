@@ -1,5 +1,14 @@
 import { body, header, param, query, type ValidationChain } from "express-validator";
-import { ONBOARDING_CUSTOM_ACCOUNT_KEY, ONBOARDING_CUSTOM_ACCOUNT_NAME_MAX_LENGTH, ONBOARDING_CUSTOM_SECTIONS, ONBOARDING_STATUSES, ONBOARDING_UPLOAD_KINDS } from "../models/client.model";
+import {
+  ONBOARDING_CUSTOM_ACCOUNT_KEY,
+  ONBOARDING_CUSTOM_ACCOUNT_NAME_MAX_LENGTH,
+  ONBOARDING_CUSTOM_SECTIONS,
+  ONBOARDING_EXTRA_FIELDS,
+  ONBOARDING_EXTRA_TITLE_MAX_LENGTH,
+  ONBOARDING_LONG_TEXT_MAX_LENGTH,
+  ONBOARDING_STATUSES,
+  ONBOARDING_UPLOAD_KINDS,
+} from "../models/client.model";
 import { PHONE_REGEX } from "../models/user.model";
 import {
   ONBOARDING_COMMENT_ITEM_LABEL_MAX_LENGTH,
@@ -31,6 +40,8 @@ export const answerRules: ValidationChain[] = [
   ...ONBOARDING_SECTIONS.map((section) => body(`answers.${section}`).optional().isObject().withMessage(`answers.${section} must be an object`)),
   // The answers about the accounts the team added for this client (social, Google), by their key.
   ...ONBOARDING_CUSTOM_SECTIONS.map((section) => body(`answers.${section}Custom`).optional().isObject().withMessage(`answers.${section}Custom must be an object`)),
+  // The answers to the items the team added ("Additional items"), by their key.
+  body("answers.extraItems").optional().isObject().withMessage("answers.extraItems must be an object"),
   body("submit").optional().isBoolean().withMessage("submit must be true or false").toBoolean(),
 ];
 
@@ -107,6 +118,35 @@ export const removeCustomAccountRules: ValidationChain[] = [
   ...onboardingCommentsClientRule,
   param("key").matches(ONBOARDING_CUSTOM_ACCOUNT_KEY).withMessage("Unknown account"),
 ];
+
+// The team adds an item of their own to a client's "Additional items" step, changes one, or takes
+// one off: its title, what the client is to do, and what it asks for.
+const extraKeyRule = param("key").matches(ONBOARDING_CUSTOM_ACCOUNT_KEY).withMessage("Unknown item");
+const extraItemBody = (optional: boolean): ValidationChain[] => {
+  const title = body("title")
+    .isString()
+    .withMessage("Give the item a name")
+    .trim()
+    .isLength({ min: 1, max: ONBOARDING_EXTRA_TITLE_MAX_LENGTH })
+    .withMessage(`The name must be 1–${ONBOARDING_EXTRA_TITLE_MAX_LENGTH} characters`);
+  const fields = body("fields").isArray({ max: ONBOARDING_EXTRA_FIELDS.length }).withMessage("fields must be a list");
+  return [
+    optional ? title.optional() : title,
+    body("description")
+      .optional()
+      .isString()
+      .trim()
+      .isLength({ max: ONBOARDING_LONG_TEXT_MAX_LENGTH })
+      .withMessage(`The description cannot exceed ${ONBOARDING_LONG_TEXT_MAX_LENGTH} characters`),
+    optional ? fields.optional() : fields,
+    body("fields.*").isIn([...ONBOARDING_EXTRA_FIELDS]).withMessage(`fields can only hold: ${ONBOARDING_EXTRA_FIELDS.join(", ")}`),
+  ];
+};
+export const addExtraItemRules: ValidationChain[] = [...onboardingCommentsClientRule, ...extraItemBody(false)];
+export const updateExtraItemRules: ValidationChain[] = [...onboardingCommentsClientRule, extraKeyRule, ...extraItemBody(true)];
+export const removeExtraItemRules: ValidationChain[] = [...onboardingCommentsClientRule, extraKeyRule];
+// Files for one of those items: the client's own, or the team's for them.
+export const extraItemFileRules: ValidationChain[] = [extraKeyRule];
 
 export const replyOnboardingCommentRules: ValidationChain[] = [
   ...onboardingCommentsClientRule,

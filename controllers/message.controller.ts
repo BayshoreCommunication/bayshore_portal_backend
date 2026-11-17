@@ -97,12 +97,19 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
     user.role === "client"
       ? undefined
       : await Promise.all([
-          Client.findById(clientId).select("messagesOff").lean(),
+          Client.findById(clientId).select("messagesOff email user secondaryEmails").lean(),
           User.find({ role: "client", client: clientId, status: "active" }).select("email").lean(),
-        ]).then(([client, logins]) => ({
-          on: !client?.messagesOff?.includes("message.email"),
-          to: logins.map((login) => login.email).filter(Boolean),
-        }));
+        ]).then(([client, logins]) => {
+          const to = logins.map((login) => login.email).filter((email): email is string => Boolean(email));
+          // The client's secondary emails get a copy of what goes to their main login (utils/email.ts).
+          const main = logins.some((login) => String(login._id) === String(client?.user) || login.email === client?.email);
+          // No login yet: it goes to the client's own address instead (utils/messages.ts → notifyOtherSide).
+          const own = !logins.length && client?.email ? [client.email] : [];
+          return {
+            on: !client?.messagesOff?.includes("message.email"),
+            to: main || own.length ? [...new Set([...to, ...own, ...(client?.secondaryEmails ?? [])])] : to,
+          };
+        });
 
   return ApiResponse(res, 200, "Messages fetched successfully", {
     items,

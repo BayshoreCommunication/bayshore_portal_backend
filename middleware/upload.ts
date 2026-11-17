@@ -167,3 +167,14 @@ export const onboardingMediaUpload: RequestHandler = (req, res, next) =>
     };
     next(new ApiError(422, messages[err.code] ?? err.message));
   });
+
+// Files for an item the team added to a client's onboarding ("Additional items"), under `files`:
+// images, videos and documents, as content takes. Each file's own cap is checked by the controller.
+export const onboardingExtraUpload = withContentErrors(
+  multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MEDIA_MAX_FILE_SIZE.video, files: ONBOARDING_UPLOAD_MAX_FILES },
+    fileFilter: contentFileFilter,
+  }).fields([{ name: "files", maxCount: ONBOARDING_UPLOAD_MAX_FILES }]),
+  ONBOARDING_UPLOAD_MAX_FILES
+);
