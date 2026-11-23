@@ -59,8 +59,6 @@ const sameHash = (stored: string, given: string) => {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 };
 
-// There is no public upload yet, so a visitor can't attach files: a `files` list sent here
-// would only be URLs of their choosing, shown to staff as if we had stored them. Dropped,
 // wherever in the answers it sits.
 const withoutFiles = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(withoutFiles);
