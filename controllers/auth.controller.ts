@@ -19,6 +19,7 @@ import { logAudit } from "../utils/audit";
 import { emailOnboardingWelcome } from "../utils/onboardingEmails";
 import { notifyClientSignedUp } from "../utils/notifications";
 import { catchUpMessages } from "../utils/messages";
+import { verifyWithTaskManager, provisionTaskManagerUser } from "../utils/taskManagerAuth";
 
 const failedLogin = (identifier: string, reason: string, user?: IUser) =>
   logAudit({
@@ -30,27 +31,46 @@ const failedLogin = (identifier: string, reason: string, user?: IUser) =>
     details: { identifier: identifier.slice(0, 100), reason },
   });
 
+// `allowTaskManager` (the company portal only): when no local account matches, the credentials
+// are offered to the task manager, and a verified task-manager user signs in here too. Task-manager
+// accounts already kept locally are always re-checked against the task manager, never by local
+// password. The client portal leaves this off — only real local clients sign in there.
 const authenticateUser = async (
   identifier: string,
-  password: string
+  password: string,
+  allowTaskManager = false
 ): Promise<IUser> => {
-  const query = EMAIL_REGEX.test(identifier)
-    ? { email: String(identifier).toLowerCase() }
-    : { phone: identifier };
+  const isEmail = EMAIL_REGEX.test(identifier);
+  const query = isEmail ? { email: String(identifier).toLowerCase() } : { phone: identifier };
 
   const user = await User.findOne(query).select("+password");
-  if (!user) {
-    await failedLogin(identifier, "unknown_account");
-    throw new ApiError(401, "Invalid credentials");
+
+  if (user) {
+    if (user.authSource === "taskmanager") {
+      const tm = allowTaskManager && user.email ? await verifyWithTaskManager(user.email, password) : null;
+      if (!tm) {
+        await failedLogin(identifier, "wrong_password", user);
+        throw new ApiError(401, "Invalid credentials");
+      }
+      return provisionTaskManagerUser(tm);
+    }
+
+    const isMatch = await user.comparePassword(password);
+    if (!isMatch) {
+      await failedLogin(identifier, "wrong_password", user);
+      throw new ApiError(401, "Invalid credentials");
+    }
+    return user;
   }
 
-  const isMatch = await user.comparePassword(password);
-  if (!isMatch) {
-    await failedLogin(identifier, "wrong_password", user);
-    throw new ApiError(401, "Invalid credentials");
+  // No local account — a task-manager user can still sign in to the company portal.
+  if (allowTaskManager && isEmail) {
+    const tm = await verifyWithTaskManager(String(identifier).toLowerCase(), password);
+    if (tm) return provisionTaskManagerUser(tm);
   }
 
-  return user;
+  await failedLogin(identifier, "unknown_account");
+  throw new ApiError(401, "Invalid credentials");
 };
 
 const assertActive = async (user: IUser) => {
@@ -87,7 +107,8 @@ const issueAuthTokens = async (user: IUser) => {
 // Any role can sign in here (used by the company portal).
 export const signin = asyncHandler(async (req: Request, res: Response) => {
   const { identifier, password } = req.body;
-  const user = await authenticateUser(String(identifier).trim(), password);
+  // The company portal also admits task-manager accounts (verified against the task manager).
+  const user = await authenticateUser(String(identifier).trim(), password, true);
   await assertActive(user);
 
   const tokens = await issueAuthTokens(user);

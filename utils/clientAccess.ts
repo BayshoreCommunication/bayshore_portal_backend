@@ -1,11 +1,16 @@
 import type { FilterQuery } from "mongoose";
 import { Client, type IClient } from "../models/client.model";
-import type { IUser } from "../models/user.model";
+import { USER_ROLES, type IUser, type UserRole } from "../models/user.model";
 
-export const FULL_ACCESS_ROLES = ["admin", "superadmin"];
+// Every staff member may now READ every client (and all that hangs off a client). What each may
+// CHANGE is still decided by role, on the write routes (authorize(...) in the route files). Only
+// a "client" account is kept out — clients never reach here; they use the /me routes, limited to
+// their own company.
+export const FULL_ACCESS_ROLES: UserRole[] = USER_ROLES.filter((role) => role !== "client");
 
-// Admins see every client; everyone else only sees the clients they own,
-// are assigned to, or created. Used by clients and by everything hung off a client.
+// Staff see every client; everyone else (there is no one else here — clients use /me) would only
+// see the clients they own, are assigned to, or created. Used by clients and by everything hung
+// off a client.
 export const clientScopeFor = (requester: IUser): FilterQuery<IClient> =>
   FULL_ACCESS_ROLES.includes(requester.role)
     ? {}

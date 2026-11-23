@@ -47,6 +47,9 @@ export interface IUser extends Document {
   // A client login's password, sealed (utils/secretBox.ts), so the team can read it back to them.
   passwordSealed?: string;
   role: UserRole;
+  // Where this account's password lives. "taskmanager" accounts are verified against the task
+  // manager on every sign-in; their local password field is a placeholder and never used.
+  authSource?: "local" | "taskmanager";
   status: UserStatus;
   muted: boolean;
   theme: UserTheme;
@@ -201,6 +204,11 @@ const userSchema = new Schema<IUser>(
       type: String,
       enum: USER_ROLES,
       default: "employee",
+    },
+    authSource: {
+      type: String,
+      enum: ["local", "taskmanager"],
+      default: "local",
     },
     status: {
       type: String,

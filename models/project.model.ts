@@ -67,6 +67,9 @@ export interface IProject extends Document {
   targetDate?: Date;
   priority: ProjectPriority;
   status: ProjectStatus;
+  // Mirrors the task manager's project: a color tag and its team members.
+  color?: string;
+  members?: mongoose.Types.ObjectId[];
   files: IProjectFile[];
 
   requestedBy: ProjectRequester;
@@ -142,6 +145,9 @@ const projectSchema = new Schema<IProject>(
     targetDate: { type: Date },
     priority: { type: String, enum: PROJECT_PRIORITIES, default: "normal" },
     status: { type: String, enum: PROJECT_STATUSES, default: "new" },
+    // Mirrors the task manager's project.
+    color: { type: String, trim: true, default: "#4f8ef7" },
+    members: { type: [{ type: Schema.Types.ObjectId, ref: "User" }], default: [] },
     files: {
       type: [projectFileSchema],
       default: [],

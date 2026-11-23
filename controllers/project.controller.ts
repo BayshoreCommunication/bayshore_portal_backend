@@ -10,6 +10,7 @@ import { clientScopeFor } from "../utils/clientAccess";
 import { emailProjectCreated } from "../utils/activityEmails";
 import { notifyProjectCreated } from "../utils/notifications";
 import { uploadToSpaces, deleteFromSpaces } from "../utils/uploadToSpaces";
+import { createTaskManagerProject } from "../utils/taskManagerSync";
 
 // A client's projects are their custom services (client.details.services, `custom`): one-time
 // work the team named itself, on the client's Services and pricing. There is no project record of
@@ -81,21 +82,26 @@ const peopleOf = async (plans: Plan[]) => {
 
 // ── Finding them ─────────────────────────────────────────────────────────────
 
-// The clients' custom services, each with its project id. One never given an id before gets it
-// now — written on its own, so an older record that wouldn't pass today's checks can't stop the list.
+// A custom service shows as a project only once it's opened as one (Add project), which stamps
+// `requestedBy`. Plain custom services on the client's record (no requester) stay off the list.
+const isProjectPlan = (plan: Plan) => Boolean(plan.requestedBy);
+
+// The clients' projects (custom services opened as a project), each with its project id. One
+// never given an id before gets it now — written on its own, so an older record that wouldn't
+// pass today's checks can't stop the list.
 const projectsOf = async (clients: IClient[]) => {
   const found: { client: IClient; plan: Plan }[] = [];
   for (const client of clients) {
     const services = client.details?.services ?? [];
     const ids: Record<string, mongoose.Types.ObjectId> = {};
     services.forEach((plan, index) => {
-      if (plan.custom && !plan.project) {
+      if (isProjectPlan(plan) && !plan.project) {
         plan.project = new mongoose.Types.ObjectId();
         ids[`details.services.${index}.project`] = plan.project;
       }
     });
     if (Object.keys(ids).length) await Client.updateOne({ _id: client._id }, { $set: ids });
-    for (const plan of services) if (plan.custom) found.push({ client, plan });
+    for (const plan of services) if (isProjectPlan(plan)) found.push({ client, plan });
   }
   return found;
 };
@@ -103,8 +109,8 @@ const projectsOf = async (clients: IClient[]) => {
 // One project, with the client it is on — among the clients `scope` allows.
 const findProject = async (id: string, scope: mongoose.FilterQuery<IClient>) => {
   if (!mongoose.isValidObjectId(id)) throw new ApiError(404, "Project not found");
-  const client = await Client.findOne({ $and: [{ "details.services": { $elemMatch: { custom: true, project: new mongoose.Types.ObjectId(id) } } }, scope] });
-  const plan = client?.details?.services.find((each) => each.custom && String(each.project) === id);
+  const client = await Client.findOne({ $and: [{ "details.services": { $elemMatch: { requestedBy: { $exists: true }, project: new mongoose.Types.ObjectId(id) } } }, scope] });
+  const plan = client?.details?.services.find((each) => isProjectPlan(each) && String(each.project) === id);
   // Same answer whether it doesn't exist or is on a client you can't see.
   if (!client || !plan) throw new ApiError(404, "Project not found");
   return { client, plan };
@@ -257,6 +263,18 @@ const announce = async (client: IClient, plan: Plan, actor: IUser) => {
   await notifyProjectCreated(project, actor);
 };
 
+// Mirror a new project into the task manager (a Project + a starter Task), and remember their ids
+// on the service. Never blocks or fails project creation — if the task manager can't be reached,
+// the project simply isn't mirrored this time.
+const syncToTaskManager = async (client: IClient, plan: Plan, assignees: string[] = []) => {
+  const synced = await createTaskManagerProject({ name: plan.name, description: descriptionOf(plan), status: statusOf(plan), assignees });
+  if (!synced || !plan.project) return;
+  await Client.updateOne(
+    { _id: client._id, "details.services.project": plan.project },
+    { $set: { "details.services.$.syncProjectId": synced.projectId, "details.services.$.syncTaskId": synced.taskId } }
+  ).catch((error) => console.error("Project: couldn't store task-manager ids:", error));
+};
+
 const takeOff = async (client: IClient, plan: Plan) => {
   client.set(
     "details.services",
@@ -277,6 +295,7 @@ export const createProject = asyncHandler(async (req: Request, res: Response) =>
 
   const plan = await addTo(client, req, "team", true);
   await announce(client, plan, requester);
+  await syncToTaskManager(client, plan, parseList(req.body.assignees));
 
   return ApiResponse(res, 201, "Project created successfully", viewOf(client, plan, await peopleOf([plan])));
 });
@@ -284,7 +303,7 @@ export const createProject = asyncHandler(async (req: Request, res: Response) =>
 export const listProjects = asyncHandler(async (req: Request, res: Response) => {
   const requester = req.user!;
   const { client } = req.query as Record<string, string | undefined>;
-  const clients = await Client.find({ $and: [staffScope(requester, client), { "details.services.custom": true }] });
+  const clients = await Client.find({ $and: [staffScope(requester, client), { "details.services.requestedBy": { $exists: true } }] });
   const found = await projectsOf(clients);
   const { matching, page, summary, pagination } = listOf(found, req, true);
 
@@ -379,6 +398,7 @@ export const createMyProject = asyncHandler(async (req: Request, res: Response) 
   const client = await myClientOf(req.user!);
   const plan = await addTo(client, req, "client", false);
   await announce(client, plan, req.user!);
+  await syncToTaskManager(client, plan);
   return ApiResponse(res, 201, "Project created successfully", viewOf(client, plan, false));
 });
 

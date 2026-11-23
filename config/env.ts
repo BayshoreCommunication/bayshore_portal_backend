@@ -99,6 +99,14 @@ export const env = {
     // Where a client's reply to an email goes, if not to the sender.
     replyTo: process.env.EMAIL_REPLY_TO || "",
   },
+  // Optional at boot: lets a task-manager account sign in to the company portal with the same
+  // password. The backend's signin verifies the credentials against the task manager
+  // (utils/taskManagerAuth.ts). Without both the URL and the key, delegation is off and only
+  // local accounts can sign in — nothing else changes.
+  taskManager: {
+    url: (process.env.TASKMANAGER_API_URL || "").replace(/\/+$/, ""),
+    ssoKey: process.env.PORTAL_SSO_KEY || "",
+  },
   doSpaces: {
     key: process.env.DO_SPACES_KEY as string,
     secret: process.env.DO_SPACES_SECRET as string,

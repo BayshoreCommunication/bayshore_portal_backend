@@ -451,6 +451,9 @@ export interface IClientServicePlan {
   createdBy?: mongoose.Types.ObjectId;
   // When work started on it (finished: `doneAt`; asked for: `addedAt`).
   startedAt?: Date;
+  // Mirrored into the task manager (utils/taskManagerSync.ts): the Project and starter Task there.
+  syncProjectId?: string;
+  syncTaskId?: string;
 }
 
 export const CLIENT_PROJECT_STAGES = ["new", "in_progress"] as const;
@@ -1075,6 +1078,8 @@ const clientServicePlanSchema = new Schema<IClientServicePlan>(
     requestedBy: { type: String, enum: ["client", "team"] },
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },
     startedAt: { type: Date },
+    syncProjectId: { type: String },
+    syncTaskId: { type: String },
   },
   { _id: false }
 );
